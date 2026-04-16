@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+uv.lock
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Claude Code (local settings)
+.claude/
+.claudeignore
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Docker
+docker-compose.override.yml
+
+# Prefect
+.prefect/
+prefect.db
+
+# Logs
+*.log
+logs/
+
+# Data
+data/
+media/
+uploads/
+*.sqlite
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,88 @@
+# =============================================================================
+# Mandari Prefect Ingestor — Dev-Umgebung
+# =============================================================================
+# Startet:
+#   - postgres        — Datenbank
+#   - prefect-server  — Prefect-Orchestration-Server (UI auf :4200)
+#   - api             — FastAPI (OParl + Management)
+#   - worker          — Prefect-Worker für Flows
+# =============================================================================
+
+name: mandari-ingestor
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ingestor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ingestor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ingestor_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-ingestor}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ingestor}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ingestor
+
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    container_name: ingestor-prefect-server
+    restart: unless-stopped
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/prefect
+    ports:
+      - "4200:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ingestor
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mandari-ingestor:dev
+    container_name: ingestor-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
+      PREFECT_API_URL: http://prefect-server:4200/api
+      API_KEY: ${API_KEY:-dev-key}
+      LOG_LEVEL: INFO
+      LOG_FORMAT: console
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ingestor
+
+  worker:
+    image: mandari-ingestor:dev
+    container_name: ingestor-worker
+    restart: unless-stopped
+    command: prefect worker start --pool default
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
+      PREFECT_API_URL: http://prefect-server:4200/api
+    depends_on:
+      - prefect-server
+    networks:
+      - ingestor
+
+volumes:
+  postgres_data:
+    name: mandari_ingestor_postgres_data
+
+networks:
+  ingestor:
+    driver: bridge
