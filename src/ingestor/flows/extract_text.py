@@ -1,14 +1,18 @@
 """
-Prefect-Flow: PDF-Text-Extraktion.
+OCR-Worker: PDF-Text-Extraktion mit 3-stufiger Fallback-Chain.
 
-Läuft UNABHÄNGIG vom Sync-Flow als eigener Prozess.
-Prüft die DB auf Files mit text_extraction_status='pending' und
-extrahiert Text via pypdf → Tesseract-OCR Fallback-Chain.
+Läuft UNABHÄNGIG vom Sync als eigener Prozess/Container.
 
-Kann als eigenständiger Worker/Container laufen:
-    uv run python -c "from ingestor.flows.extract_text import ...; ..."
+Fallback-Chain:
+  1. pypdf (lokal, schnell, kostenlos) — funktioniert bei digitalen PDFs
+  2. Tesseract OCR (lokal, langsamer, kostenlos) — funktioniert bei gescannten PDFs
+  3. KI-API OCR (Mistral/Deepseek, kostenpflichtig) — letzter Versuch
+  4. Wenn nichts → ocr_status = "failed"
 
-Oder via Prefect-Schedule alle 5 Minuten.
+DB-Felder:
+  - ocr_done: false (default) → true (erfolgreich) oder false (failed)
+  - text_extraction_status: "pending" → "processing" → "done" / "failed"
+  - text_extraction_method: "pypdf" / "tesseract" / "mistral" / "deepseek"
 """
 
 from __future__ import annotations
@@ -20,8 +24,9 @@ from uuid import UUID
 
 import httpx
 from prefect import flow, get_run_logger, task
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from ingestor.config import get_settings
 from ingestor.db import get_session
 from ingestor.db.models import File
 
@@ -29,83 +34,118 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_MIME_TYPES = {"application/pdf", "text/plain", "text/html", "text/csv"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+MIN_TEXT_LENGTH = 50  # Mindestens 50 Zeichen für "gültigen" Text
 
 
-@task(name="download-and-extract", retries=1, retry_delay_seconds=10)
-async def download_and_extract(file_id: UUID) -> dict:
+# =============================================================================
+# Haupt-Task: Download + Extraktion mit Fallback-Chain
+# =============================================================================
+
+
+@task(name="ocr-extract-file", retries=1, retry_delay_seconds=10)
+async def ocr_extract_file(file_id: UUID) -> dict:
     """
-    Lädt eine Datei herunter und extrahiert den Text.
+    Lädt eine Datei herunter und extrahiert Text.
 
-    Fallback-Chain: pypdf → Tesseract OCR
+    Fallback-Chain: pypdf → Tesseract → KI-API (Mistral/Deepseek)
 
-    Returns: {"chars": int, "method": str, "pages": int|None}
+    Returns:
+        {"status": "done", "method": "pypdf", "chars": 1234, "pages": 5}
+        oder {"status": "failed", "error": "..."}
     """
+    # File-Metadaten laden
     async with get_session() as session:
         file_obj = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
         if not file_obj:
-            return {"error": "File nicht gefunden"}
+            return {"status": "failed", "error": "File nicht gefunden"}
 
         url = file_obj.download_url or file_obj.access_url
         if not url:
-            file_obj.text_extraction_status = "skipped"
-            file_obj.text_extraction_error = "Keine Download-URL"
-            return {"error": "Keine URL"}
+            await _set_failed(file_id, "Keine Download-URL")
+            return {"status": "failed", "error": "Keine URL"}
 
         mime = file_obj.mime_type or ""
-        if mime and mime not in SUPPORTED_MIME_TYPES and not mime.startswith("application/"):
-            file_obj.text_extraction_status = "skipped"
-            file_obj.text_extraction_error = f"MIME-Typ nicht unterstützt: {mime}"
-            return {"error": f"Unsupported: {mime}"}
 
-    # Download
+    # Nur PDFs und Text-Dateien verarbeiten
+    if mime and mime not in SUPPORTED_MIME_TYPES and not mime.startswith("application/"):
+        await _set_failed(file_id, f"MIME-Typ nicht unterstützt: {mime}")
+        return {"status": "failed", "error": f"Unsupported: {mime}"}
+
+    # --- Download ---
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             response = await client.get(url, headers={"User-Agent": "Mandari-Ingestor/0.1"})
             if response.status_code != 200:
-                await _update_status(file_id, "failed", f"HTTP {response.status_code}")
-                return {"error": f"HTTP {response.status_code}"}
-
+                await _set_failed(file_id, f"HTTP {response.status_code}")
+                return {"status": "failed", "error": f"HTTP {response.status_code}"}
         data = response.content
-        if len(data) > MAX_FILE_SIZE:
-            await _update_status(file_id, "skipped", f"Zu groß: {len(data)} bytes")
-            return {"error": "Too large"}
-
     except Exception as exc:
-        await _update_status(file_id, "failed", f"Download: {exc}")
-        return {"error": str(exc)}
+        await _set_failed(file_id, f"Download: {exc}")
+        return {"status": "failed", "error": str(exc)}
 
-    # Extraction
-    text = ""
-    method = ""
-    page_count = None
+    if len(data) > MAX_FILE_SIZE:
+        await _set_failed(file_id, f"Zu groß: {len(data)} bytes")
+        return {"status": "failed", "error": "Too large"}
 
-    # 1. pypdf
-    if data[:5] == b"%PDF-":
-        text, page_count, method = _extract_pdf(data)
+    sha256 = hashlib.sha256(data).hexdigest()
+    is_pdf = data[:5] == b"%PDF-"
 
-    # 2. Plaintext fallback
-    if not text.strip():
+    # =========================================================================
+    # STUFE 1: pypdf (lokal, schnell, kostenlos)
+    # =========================================================================
+    if is_pdf:
+        text, page_count = _extract_pypdf(data)
+        if text and len(text.strip()) >= MIN_TEXT_LENGTH:
+            await _save_success(file_id, text.strip(), "pypdf", page_count, sha256)
+            return {"status": "done", "method": "pypdf", "chars": len(text.strip()), "pages": page_count}
+
+    # =========================================================================
+    # STUFE 2: Tesseract OCR (lokal, langsamer, kostenlos)
+    # =========================================================================
+    if is_pdf:
+        text, page_count = _extract_tesseract(data)
+        if text and len(text.strip()) >= MIN_TEXT_LENGTH:
+            await _save_success(file_id, text.strip(), "tesseract", page_count, sha256)
+            return {"status": "done", "method": "tesseract", "chars": len(text.strip()), "pages": page_count}
+
+    # =========================================================================
+    # STUFE 3: KI-API OCR (Mistral oder Deepseek, kostenpflichtig)
+    # =========================================================================
+    if is_pdf:
+        text = await _extract_ki_api(data, url)
+        if text and len(text.strip()) >= MIN_TEXT_LENGTH:
+            await _save_success(file_id, text.strip(), "ki-api", page_count, sha256)
+            return {"status": "done", "method": "ki-api", "chars": len(text.strip()), "pages": None}
+
+    # =========================================================================
+    # STUFE 0: Plaintext-Dateien (kein PDF)
+    # =========================================================================
+    if not is_pdf:
         try:
             text = data.decode("utf-8")
-            method = "plaintext"
         except UnicodeDecodeError:
             try:
                 text = data.decode("latin-1")
-                method = "plaintext-latin1"
             except Exception:
-                pass
+                text = ""
+        if text and len(text.strip()) >= MIN_TEXT_LENGTH:
+            await _save_success(file_id, text.strip(), "plaintext", None, sha256)
+            return {"status": "done", "method": "plaintext", "chars": len(text.strip()), "pages": None}
 
-    if text.strip():
-        sha256 = hashlib.sha256(data).hexdigest()
-        await _save_text(file_id, text.strip(), method, page_count, sha256)
-        return {"chars": len(text.strip()), "method": method, "pages": page_count}
-    else:
-        await _update_status(file_id, "failed", "Kein Text extrahierbar")
-        return {"error": "Kein Text"}
+    # =========================================================================
+    # FEHLGESCHLAGEN: Keine Methode hat Text extrahiert
+    # =========================================================================
+    await _set_failed(file_id, "Kein Text extrahierbar (alle Methoden fehlgeschlagen)")
+    return {"status": "failed", "error": "Alle Methoden fehlgeschlagen"}
 
 
-def _extract_pdf(data: bytes) -> tuple[str, int | None, str]:
-    """Extrahiert Text aus PDF via pypdf. Gibt (text, page_count, method) zurück."""
+# =============================================================================
+# Extraktions-Methoden
+# =============================================================================
+
+
+def _extract_pypdf(data: bytes) -> tuple[str, int | None]:
+    """Stufe 1: pypdf — digitale PDFs mit eingebettetem Text."""
     try:
         import io
 
@@ -116,65 +156,120 @@ def _extract_pdf(data: bytes) -> tuple[str, int | None, str]:
         for page in reader.pages:
             page_text = page.extract_text() or ""
             pages.append(page_text)
-
         text = "\n\n".join(pages)
-        page_count = len(reader.pages)
-
-        if len(text.strip()) > 50:
-            return text, page_count, "pypdf"
-
-        # Fallback: Tesseract OCR
-        try:
-            text_ocr, success = _ocr_extract(data)
-            if success and len(text_ocr.strip()) > len(text.strip()):
-                return text_ocr, page_count, "tesseract"
-        except Exception:
-            pass
-
-        return text, page_count, "pypdf"
+        return text, len(reader.pages)
     except Exception as exc:
-        logger.warning("pypdf failed: %s", exc)
-        return "", None, ""
+        logger.debug("pypdf failed: %s", exc)
+        return "", None
 
 
-def _ocr_extract(data: bytes) -> tuple[str, bool]:
-    """OCR via Tesseract (pdf2image + pytesseract)."""
+def _extract_tesseract(data: bytes) -> tuple[str, int | None]:
+    """Stufe 2: Tesseract OCR — gescannte PDFs als Bilder."""
     try:
         import pytesseract
         from pdf2image import convert_from_bytes
 
-        images = convert_from_bytes(data, dpi=200, first_page=1, last_page=5)
+        # Maximal 10 Seiten (Speicher + Zeit begrenzen)
+        images = convert_from_bytes(data, dpi=200, first_page=1, last_page=10)
         texts = []
         for img in images:
-            text = pytesseract.image_to_string(img, lang="deu")
+            text = pytesseract.image_to_string(img, lang="deu+eng")
             texts.append(text)
         full_text = "\n\n".join(texts)
-        return full_text, len(full_text.strip()) > 50
+        return full_text, len(images)
     except Exception as exc:
-        logger.warning("OCR failed: %s", exc)
-        return "", False
+        logger.debug("Tesseract failed: %s", exc)
+        return "", None
 
 
-async def _update_status(file_id: UUID, status: str, error: str | None = None) -> None:
-    """Atomares Update NUR der Enrichment-Spalten (kein Full-Row-Update)."""
-    from sqlalchemy import update
+async def _extract_ki_api(data: bytes, source_url: str) -> str:
+    """
+    Stufe 3: KI-API OCR (Mistral oder Deepseek).
 
-    async with get_session() as session:
-        await session.execute(
-            update(File)
-            .where(File.id == file_id)
-            .values(
-                text_extraction_status=status,
-                text_extraction_error=error,
-                text_extracted_at=datetime.now(UTC),
-            )
+    Sendet die PDF-URL (nicht die Bytes!) an die KI-API.
+    Die API lädt die PDF selbst herunter und extrahiert den Text.
+    """
+    settings = get_settings()
+
+    # Mistral OCR (bevorzugt)
+    mistral_key = getattr(settings, "mistral_api_key", None)
+    if mistral_key:
+        try:
+            return await _mistral_ocr(source_url, mistral_key)
+        except Exception as exc:
+            logger.debug("Mistral OCR failed: %s", exc)
+
+    # Deepseek OCR (Fallback)
+    deepseek_key = getattr(settings, "deepseek_api_key", None)
+    if deepseek_key:
+        try:
+            return await _deepseek_ocr(source_url, deepseek_key)
+        except Exception as exc:
+            logger.debug("Deepseek OCR failed: %s", exc)
+
+    return ""
+
+
+async def _mistral_ocr(pdf_url: str, api_key: str) -> str:
+    """Mistral AI OCR via API."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            "https://api.mistral.ai/v1/ocr",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "mistral-ocr-latest",
+                "document": {"type": "document_url", "document_url": pdf_url},
+            },
         )
+        if response.status_code != 200:
+            logger.warning("Mistral OCR HTTP %d: %s", response.status_code, response.text[:200])
+            return ""
+        result = response.json()
+        # Mistral gibt pages[] zurück, jede mit markdown_content
+        pages = result.get("pages", [])
+        texts = [p.get("markdown", "") for p in pages]
+        return "\n\n".join(texts)
 
 
-async def _save_text(file_id: UUID, text: str, method: str, page_count: int | None, sha256: str) -> None:
-    """Atomares Update NUR der Text-Spalten (kein Konflikt mit Sync-Upsert)."""
-    from sqlalchemy import update
+async def _deepseek_ocr(pdf_url: str, api_key: str) -> str:
+    """Deepseek Vision OCR via Chat-API."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            "https://api.deepseek.com/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Extrahiere den gesamten Text aus diesem Dokument. Gib nur den extrahierten Text zurück, ohne Kommentare.",
+                            },
+                            {"type": "image_url", "image_url": {"url": pdf_url}},
+                        ],
+                    }
+                ],
+                "max_tokens": 4096,
+            },
+        )
+        if response.status_code != 200:
+            return ""
+        result = response.json()
+        choices = result.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "")
+        return ""
 
+
+# =============================================================================
+# DB-Operationen (atomare UPDATEs, kein ORM read-modify-write)
+# =============================================================================
+
+
+async def _save_success(file_id: UUID, text: str, method: str, page_count: int | None, sha256: str) -> None:
+    """Speichert erfolgreich extrahierten Text. OCR = done."""
     async with get_session() as session:
         await session.execute(
             update(File)
@@ -183,6 +278,7 @@ async def _save_text(file_id: UUID, text: str, method: str, page_count: int | No
                 text_content=text,
                 text_extraction_status="done",
                 text_extraction_method=method,
+                text_extraction_error=None,
                 page_count=page_count,
                 sha256_hash=sha256,
                 text_extracted_at=datetime.now(UTC),
@@ -190,25 +286,39 @@ async def _save_text(file_id: UUID, text: str, method: str, page_count: int | No
         )
 
 
-@flow(name="extract-pending-texts", log_prints=True)
-async def extract_pending_texts(batch_size: int = 50, max_concurrent: int = 3) -> dict:
-    """
-    Verarbeitet ausstehende PDF-Files.
+async def _set_failed(file_id: UUID, error: str) -> None:
+    """Markiert File als fehlgeschlagen. OCR = failed."""
+    async with get_session() as session:
+        await session.execute(
+            update(File)
+            .where(File.id == file_id)
+            .values(
+                text_extraction_status="failed",
+                text_extraction_error=error,
+                text_extracted_at=datetime.now(UTC),
+            )
+        )
 
-    Läuft als eigenständiger Flow, NICHT im Sync-Zyklus.
-    Kann als Worker/Container laufen oder per Cron alle 5 Min.
+
+# =============================================================================
+# Flow: Batch-Verarbeitung ausstehender Files
+# =============================================================================
+
+
+@flow(name="ocr-worker", log_prints=True)
+async def ocr_worker_flow(batch_size: int = 30, max_concurrent: int = 3) -> dict:
+    """
+    OCR-Worker-Flow: Verarbeitet ausstehende PDF-Files.
+
+    Läuft als eigenständiger Container, NICHT im Sync-Zyklus.
+    Verwendet SELECT FOR UPDATE SKIP LOCKED für parallele Worker.
     """
     import asyncio
 
     log = get_run_logger()
 
+    # Atomares Claim: pending → processing
     async with get_session() as session:
-        # FOR UPDATE SKIP LOCKED: Verhindert, dass zwei OCR-Worker
-        # dieselbe Datei gleichzeitig bearbeiten. Gesperrte Rows werden
-        # übersprungen statt blockiert.
-        from sqlalchemy import update
-
-        # Atomares Claim: status pending → processing (verhindert Doppelverarbeitung)
         claimed = (
             (
                 await session.execute(
@@ -226,25 +336,46 @@ async def extract_pending_texts(batch_size: int = 50, max_concurrent: int = 3) -
             await session.execute(
                 update(File).where(File.id.in_(claimed)).values(text_extraction_status="processing")
             )
-        pending = claimed
 
-    if not pending:
-        log.info("No pending files for extraction")
-        return {"processed": 0}
+    if not claimed:
+        log.info("Keine ausstehenden Files für OCR")
+        return {"processed": 0, "success": 0, "failed": 0}
 
-    log.info("Extracting text from %d files", len(pending))
+    log.info("OCR-Worker: %d Files geclaimt", len(claimed))
 
+    # Parallel verarbeiten
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def process(fid: UUID) -> dict:
         async with semaphore:
-            return await download_and_extract(fid)
+            return await ocr_extract_file(fid)
 
-    results = await asyncio.gather(*[process(fid) for fid in pending], return_exceptions=True)
+    results = await asyncio.gather(*[process(fid) for fid in claimed], return_exceptions=True)
 
-    success = sum(1 for r in results if isinstance(r, dict) and "chars" in r)
-    failed = sum(1 for r in results if isinstance(r, dict) and "error" in r)
+    success = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "done")
+    failed = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "failed")
     errors = sum(1 for r in results if isinstance(r, Exception))
 
-    log.info("Extraction done: %d success, %d failed, %d errors", success, failed, errors)
-    return {"processed": len(pending), "success": success, "failed": failed, "errors": errors}
+    # Methoden-Statistik
+    methods: dict[str, int] = {}
+    for r in results:
+        if isinstance(r, dict) and r.get("method"):
+            m = r["method"]
+            methods[m] = methods.get(m, 0) + 1
+
+    log.info(
+        "OCR-Worker fertig: %d/%d erfolgreich, %d fehlgeschlagen, %d Fehler | Methoden: %s",
+        success,
+        len(claimed),
+        failed,
+        errors,
+        methods,
+    )
+
+    return {
+        "processed": len(claimed),
+        "success": success,
+        "failed": failed,
+        "errors": errors,
+        "methods": methods,
+    }

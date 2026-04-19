@@ -67,12 +67,13 @@ services:
     restart: unless-stopped
     command: >
       python -c "
-      import asyncio, time
-      from ingestor.flows.extract_text import extract_pending_texts
+      import asyncio, time, os
+      os.environ['PREFECT_API_URL'] = ''
+      from ingestor.flows.extract_text import ocr_worker_flow
       while True:
           try:
-              result = asyncio.run(extract_pending_texts(batch_size=20, max_concurrent=2))
-              print(f'OCR batch: {result}', flush=True)
+              result = asyncio.run(ocr_worker_flow(batch_size=30, max_concurrent=2))
+              print(f'OCR: {result}', flush=True)
           except Exception as e:
               print(f'OCR error: {e}', flush=True)
           time.sleep(300)
@@ -81,6 +82,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
       PREFECT_API_URL: ""
       LOG_LEVEL: INFO
+      # KI-API Keys für Stufe 3 Fallback (optional)
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

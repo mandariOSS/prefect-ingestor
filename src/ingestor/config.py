@@ -50,10 +50,15 @@ class Settings(BaseSettings):
     http_max_retries: int = 3
     http_user_agent: str = "Mandari-Ingestor/0.1 (https://mandari.de)"
 
-    # === Text-Extraktion ===
-    text_extraction_enabled: bool = True
-    text_extraction_max_size_mb: int = 50
-    text_extraction_concurrency: int = 3
+    # === OCR-Worker ===
+    ocr_enabled: bool = True
+    ocr_batch_size: int = 30
+    ocr_concurrency: int = 3
+    ocr_max_file_size_mb: int = 50
+
+    # === KI-API OCR (Stufe 3 Fallback, optional) ===
+    mistral_api_key: str | None = None
+    deepseek_api_key: str | None = None
 
     # === Logging ===
     log_level: str = "INFO"
