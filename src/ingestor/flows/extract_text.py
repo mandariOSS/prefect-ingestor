@@ -156,24 +156,38 @@ def _ocr_extract(data: bytes) -> tuple[str, bool]:
 
 
 async def _update_status(file_id: UUID, status: str, error: str | None = None) -> None:
+    """Atomares Update NUR der Enrichment-Spalten (kein Full-Row-Update)."""
+    from sqlalchemy import update
+
     async with get_session() as session:
-        f = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
-        if f:
-            f.text_extraction_status = status
-            f.text_extraction_error = error
-            f.text_extracted_at = datetime.now(UTC)
+        await session.execute(
+            update(File)
+            .where(File.id == file_id)
+            .values(
+                text_extraction_status=status,
+                text_extraction_error=error,
+                text_extracted_at=datetime.now(UTC),
+            )
+        )
 
 
 async def _save_text(file_id: UUID, text: str, method: str, page_count: int | None, sha256: str) -> None:
+    """Atomares Update NUR der Text-Spalten (kein Konflikt mit Sync-Upsert)."""
+    from sqlalchemy import update
+
     async with get_session() as session:
-        f = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
-        if f:
-            f.text_content = text
-            f.text_extraction_status = "done"
-            f.text_extraction_method = method
-            f.page_count = page_count
-            f.sha256_hash = sha256
-            f.text_extracted_at = datetime.now(UTC)
+        await session.execute(
+            update(File)
+            .where(File.id == file_id)
+            .values(
+                text_content=text,
+                text_extraction_status="done",
+                text_extraction_method=method,
+                page_count=page_count,
+                sha256_hash=sha256,
+                text_extracted_at=datetime.now(UTC),
+            )
+        )
 
 
 @flow(name="extract-pending-texts", log_prints=True)
@@ -189,18 +203,30 @@ async def extract_pending_texts(batch_size: int = 50, max_concurrent: int = 3) -
     log = get_run_logger()
 
     async with get_session() as session:
-        pending = (
+        # FOR UPDATE SKIP LOCKED: Verhindert, dass zwei OCR-Worker
+        # dieselbe Datei gleichzeitig bearbeiten. Gesperrte Rows werden
+        # übersprungen statt blockiert.
+        from sqlalchemy import update
+
+        # Atomares Claim: status pending → processing (verhindert Doppelverarbeitung)
+        claimed = (
             (
                 await session.execute(
                     select(File.id)
                     .where(File.text_extraction_status == "pending")
                     .order_by(File.created_at)
                     .limit(batch_size)
+                    .with_for_update(skip_locked=True)
                 )
             )
             .scalars()
             .all()
         )
+        if claimed:
+            await session.execute(
+                update(File).where(File.id.in_(claimed)).values(text_extraction_status="processing")
+            )
+        pending = claimed
 
     if not pending:
         log.info("No pending files for extraction")

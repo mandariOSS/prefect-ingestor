@@ -122,8 +122,28 @@ async def upsert_entity(
         existing = result.scalar_one_or_none()
 
         if existing:
+            # WICHTIG: Enrichment-Spalten NICHT überschreiben!
+            # Diese werden von OCR/Geo/Photo-Workern unabhängig gesetzt.
+            ENRICHMENT_FIELDS = frozenset(
+                {
+                    "text_content",
+                    "text_extraction_status",
+                    "text_extraction_method",
+                    "text_extraction_error",
+                    "text_extracted_at",
+                    "page_count",
+                    "sha256_hash",
+                    "latitude",
+                    "longitude",
+                    "photo_url",
+                    "photo_data",
+                    "photo_mime_type",
+                    "photo_downloaded_at",
+                }
+            )
             for key, value in fields.items():
-                setattr(existing, key, value)
+                if key not in ENRICHMENT_FIELDS:
+                    setattr(existing, key, value)
             await session.flush()
             return existing.id
         else:

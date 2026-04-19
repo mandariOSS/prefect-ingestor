@@ -117,11 +117,15 @@ async def geocode_locations(body_id: UUID, max_concurrent: int = 3) -> dict:
             if not result:
                 return False
 
+            # Atomares Update NUR der Geo-Spalten (kein Konflikt mit Sync)
+            from sqlalchemy import update as sa_update
+
             async with get_session() as session:
-                db_loc = (await session.execute(select(Location).where(Location.id == loc.id))).scalar_one()
-                db_loc.latitude = result["lat"]
-                db_loc.longitude = result["lon"]
-                await session.flush()
+                await session.execute(
+                    sa_update(Location)
+                    .where(Location.id == loc.id)
+                    .values(latitude=result["lat"], longitude=result["lon"])
+                )
             return True
 
     results = await asyncio.gather(*[process_location(loc) for loc in locations], return_exceptions=True)
