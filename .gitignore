@@ -16,7 +16,7 @@ venv/
 env/
 
 # uv
-uv.lock
+# uv.lock wird committed (CI braucht es)
 
 # Testing
 .pytest_cache/
