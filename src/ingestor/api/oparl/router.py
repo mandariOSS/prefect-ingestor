@@ -222,17 +222,17 @@ def _serialize_body(body: Body, request: Request) -> dict:
         {
             "type": "https://schema.oparl.org/1.1/Body",
             "system": f"{base}/system",
-            "organization": f"{base}/body/{bid}/organizations",
-            "person": f"{base}/body/{bid}/persons",
-            "meeting": f"{base}/body/{bid}/meetings",
-            "paper": f"{base}/body/{bid}/papers",
-            "legislativeTerm": f"{base}/body/{bid}/legislative-terms",
-            "agendaItem": f"{base}/body/{bid}/agenda-items",
-            "consultation": f"{base}/body/{bid}/consultations",
-            "file": f"{base}/body/{bid}/files",
-            "locationList": f"{base}/body/{bid}/locations",
-            "legislativeTermList": f"{base}/body/{bid}/legislative-terms",
-            "membership": f"{base}/body/{bid}/memberships",
+            "organization": f"{base}/body/{bid}/organization",
+            "person": f"{base}/body/{bid}/person",
+            "meeting": f"{base}/body/{bid}/meeting",
+            "paper": f"{base}/body/{bid}/paper",
+            "legislativeTerm": f"{base}/body/{bid}/legislativeTerm",
+            "agendaItem": f"{base}/body/{bid}/agendaItem",
+            "consultation": f"{base}/body/{bid}/consultation",
+            "file": f"{base}/body/{bid}/file",
+            "locationList": f"{base}/body/{bid}/location",
+            "legislativeTermList": f"{base}/body/{bid}/legislativeTerm",
+            "membership": f"{base}/body/{bid}/membership",
             # Timestamps aus DB (nicht aus raw — raw könnte veraltet sein)
             "created": _dt(body.oparl_created),
             "modified": _dt(body.oparl_modified),
@@ -375,19 +375,19 @@ def _serialize_legislative_term(lt: LegislativeTerm, request: Request) -> dict:
 
 
 # =============================================================================
-# Routen registrieren — Listen + Detail für alle OParl-Typen
+# Routen registrieren — OParl camelCase URLs
 # =============================================================================
 
-# Organizations
-router.get("/body/{body_id}/organizations")(
-    _make_body_list_endpoint(Organization, "organizations", _serialize_organization)
+# Organization
+router.get("/body/{body_id}/organization")(
+    _make_body_list_endpoint(Organization, "organization", _serialize_organization)
 )
 router.get("/organization/{item_id}")(
     _make_detail_endpoint(Organization, "organization", _serialize_organization)
 )
 
-# Persons
-router.get("/body/{body_id}/persons")(_make_body_list_endpoint(Person, "persons", _serialize_person))
+# Person
+router.get("/body/{body_id}/person")(_make_body_list_endpoint(Person, "person", _serialize_person))
 router.get("/person/{item_id}")(_make_detail_endpoint(Person, "person", _serialize_person))
 
 
@@ -407,46 +407,46 @@ async def get_person_photo(person_id: UUID, session: SessionDep):
     )
 
 
-# Memberships
-router.get("/body/{body_id}/memberships")(
-    _make_body_list_endpoint(Membership, "memberships", _serialize_membership)
+# Membership
+router.get("/body/{body_id}/membership")(
+    _make_body_list_endpoint(Membership, "membership", _serialize_membership)
 )
 router.get("/membership/{item_id}")(_make_detail_endpoint(Membership, "membership", _serialize_membership))
 
-# Meetings
-router.get("/body/{body_id}/meetings")(_make_body_list_endpoint(Meeting, "meetings", _serialize_meeting))
+# Meeting
+router.get("/body/{body_id}/meeting")(_make_body_list_endpoint(Meeting, "meeting", _serialize_meeting))
 router.get("/meeting/{item_id}")(_make_detail_endpoint(Meeting, "meeting", _serialize_meeting))
 
-# AgendaItems
-router.get("/body/{body_id}/agenda-items")(
-    _make_body_list_endpoint(AgendaItem, "agenda-items", _serialize_agenda_item)
+# AgendaItem
+router.get("/body/{body_id}/agendaItem")(
+    _make_body_list_endpoint(AgendaItem, "agendaItem", _serialize_agenda_item)
 )
-router.get("/agenda-item/{item_id}")(_make_detail_endpoint(AgendaItem, "agenda-item", _serialize_agenda_item))
+router.get("/agendaItem/{item_id}")(_make_detail_endpoint(AgendaItem, "agendaItem", _serialize_agenda_item))
 
-# Papers
-router.get("/body/{body_id}/papers")(_make_body_list_endpoint(Paper, "papers", _serialize_paper))
+# Paper
+router.get("/body/{body_id}/paper")(_make_body_list_endpoint(Paper, "paper", _serialize_paper))
 router.get("/paper/{item_id}")(_make_detail_endpoint(Paper, "paper", _serialize_paper))
 
-# Consultations
-router.get("/body/{body_id}/consultations")(
-    _make_body_list_endpoint(Consultation, "consultations", _serialize_consultation)
+# Consultation
+router.get("/body/{body_id}/consultation")(
+    _make_body_list_endpoint(Consultation, "consultation", _serialize_consultation)
 )
 router.get("/consultation/{item_id}")(
     _make_detail_endpoint(Consultation, "consultation", _serialize_consultation)
 )
 
-# Files
-router.get("/body/{body_id}/files")(_make_body_list_endpoint(File, "files", _serialize_file))
+# File
+router.get("/body/{body_id}/file")(_make_body_list_endpoint(File, "file", _serialize_file))
 router.get("/file/{item_id}")(_make_detail_endpoint(File, "file", _serialize_file))
 
-# Locations
-router.get("/body/{body_id}/locations")(_make_body_list_endpoint(Location, "locations", _serialize_location))
+# Location
+router.get("/body/{body_id}/location")(_make_body_list_endpoint(Location, "location", _serialize_location))
 router.get("/location/{item_id}")(_make_detail_endpoint(Location, "location", _serialize_location))
 
-# LegislativeTerms
-router.get("/body/{body_id}/legislative-terms")(
-    _make_body_list_endpoint(LegislativeTerm, "legislative-terms", _serialize_legislative_term)
+# LegislativeTerm
+router.get("/body/{body_id}/legislativeTerm")(
+    _make_body_list_endpoint(LegislativeTerm, "legislativeTerm", _serialize_legislative_term)
 )
-router.get("/legislative-term/{item_id}")(
-    _make_detail_endpoint(LegislativeTerm, "legislative-term", _serialize_legislative_term)
+router.get("/legislativeTerm/{item_id}")(
+    _make_detail_endpoint(LegislativeTerm, "legislativeTerm", _serialize_legislative_term)
 )
