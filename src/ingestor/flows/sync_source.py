@@ -116,10 +116,10 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
 
             from ingestor.flows.tasks.upsert import upsert_entity
 
-            # Alle Bodies upserten
+            # Alle Bodies upserten (Bodies haben source_id statt body_id)
             body_uuid_map: dict[str, UUID] = {}
             for body_json in bodies:
-                body_uuid = await upsert_entity(body_json)
+                body_uuid = await upsert_entity(body_json, extra_fields={"source_id": source_id})
                 if body_uuid:
                     body_uuid_map[body_json["id"]] = body_uuid
             counts["bodies"] = len(body_uuid_map)
