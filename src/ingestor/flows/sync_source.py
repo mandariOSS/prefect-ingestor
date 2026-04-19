@@ -145,6 +145,14 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
                     elif isinstance(res, int):
                         counts[field] = counts.get(field, 0) + res
 
+                # Files aus Paper-JSON extrahieren (URLs weitergeben, nicht herunterladen)
+                from ingestor.flows.tasks.extract_files import extract_files_from_papers
+                try:
+                    file_count = await extract_files_from_papers(body_uuid)
+                    counts["files_extracted"] = counts.get("files_extracted", 0) + file_count
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{body_json.get('shortName', '?')}.files_extract: {exc}")
+
         status = "success" if not errors else "partial"
     except Exception as exc:  # noqa: BLE001
         log.exception("Sync failed: %s", exc)

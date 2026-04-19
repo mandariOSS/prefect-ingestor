@@ -121,8 +121,17 @@ class OParlClient:
         if response.status_code >= 400:
             raise OParlClientError(f"HTTP {response.status_code} at {url}: {response.text[:200]}")
 
+        # Encoding-Fix: Manche OParl-Server liefern UTF-8 ohne korrekten
+        # Content-Type-Charset. httpx fällt dann auf latin-1 zurück.
+        # Wir erzwingen UTF-8 (OParl-Spec schreibt JSON/UTF-8 vor).
         try:
-            return response.json()
+            text = response.content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = response.text  # Fallback auf httpx-Erkennung
+
+        try:
+            import json
+            return json.loads(text)
         except ValueError as exc:
             raise OParlClientError(f"Invalid JSON from {url}: {exc}") from exc
 

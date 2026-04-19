@@ -1,16 +1,18 @@
 # =============================================================================
-# Mandari Prefect Ingestor — Dev-Umgebung
+# Mandari Prefect Ingestor — Docker-Compose
 # =============================================================================
 # Startet:
-#   - postgres        — Datenbank
-#   - prefect-server  — Prefect-Orchestration-Server (UI auf :4200)
-#   - api             — FastAPI (OParl + Management)
-#   - worker          — Prefect-Worker für Flows
+#   - postgres         Datenbank
+#   - api              FastAPI (OParl + Management-API)
+#   - nominatim        Lokale Geocoding-Instanz (nur DE, ~3GB)
 # =============================================================================
 
 name: mandari-ingestor
 
 services:
+  # ===========================================================================
+  # PostgreSQL
+  # ===========================================================================
   postgres:
     image: postgres:16-alpine
     container_name: ingestor-postgres
@@ -29,22 +31,9 @@ services:
     networks:
       - ingestor
 
-  prefect-server:
-    image: prefecthq/prefect:3-latest
-    container_name: ingestor-prefect-server
-    restart: unless-stopped
-    command: prefect server start --host 0.0.0.0
-    environment:
-      PREFECT_SERVER_API_HOST: 0.0.0.0
-      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/prefect
-    ports:
-      - "4200:4200"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - ingestor
-
+  # ===========================================================================
+  # FastAPI — OParl-API + Management-API
+  # ===========================================================================
   api:
     build:
       context: .
@@ -54,34 +43,81 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
-      PREFECT_API_URL: http://prefect-server:4200/api
       API_KEY: ${API_KEY:-dev-key}
-      LOG_LEVEL: INFO
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: console
+      PREFECT_API_URL: ""
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - ingestor
 
-  worker:
+  # ===========================================================================
+  # OCR-Worker — Eigenständiger Service für PDF-Textextraktion
+  # ===========================================================================
+  ocr-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: mandari-ingestor:dev
-    container_name: ingestor-worker
+    container_name: ingestor-ocr-worker
     restart: unless-stopped
-    command: prefect worker start --pool default
+    command: >
+      python -c "
+      import asyncio, time
+      from ingestor.flows.extract_text import extract_pending_texts
+      while True:
+          try:
+              result = asyncio.run(extract_pending_texts(batch_size=20, max_concurrent=2))
+              print(f'OCR batch: {result}', flush=True)
+          except Exception as e:
+              print(f'OCR error: {e}', flush=True)
+          time.sleep(300)
+      "
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
-      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_API_URL: ""
+      LOG_LEVEL: INFO
     depends_on:
-      - prefect-server
+      postgres:
+        condition: service_healthy
+    mem_limit: 1g
     networks:
       - ingestor
 
+  # ===========================================================================
+  # Nominatim — Lokale Geocoding-Instanz (nur Deutschland)
+  # ===========================================================================
+  # Erster Start: ~2-4h Import der DE-Daten (~3GB Download, ~10GB DB)
+  # Danach: Unbegrenzte Anfragen, kein Rate-Limit
+  # ===========================================================================
+  nominatim:
+    image: mediagis/nominatim:4.5
+    container_name: ingestor-nominatim
+    restart: unless-stopped
+    environment:
+      PBF_URL: https://download.geofabrik.de/europe/germany-latest.osm.pbf
+      REPLICATION_URL: https://download.geofabrik.de/europe/germany-updates/
+      NOMINATIM_PASSWORD: nominatim
+      IMPORT_STYLE: street
+    volumes:
+      - nominatim_data:/var/lib/postgresql/14/main
+    ports:
+      - "8088:8080"
+    shm_size: 1g
+    networks:
+      - ingestor
+    profiles:
+      - geocoding   # Optional: nur mit `docker compose --profile geocoding up`
+
 volumes:
   postgres_data:
-    name: mandari_ingestor_postgres_data
+    name: mandari_ingestor_postgres
+  nominatim_data:
+    name: mandari_ingestor_nominatim
 
 networks:
   ingestor:
