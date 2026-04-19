@@ -29,7 +29,6 @@ async def lifespan(_app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    settings = get_settings()
     app = FastAPI(
         title="Mandari Prefect Ingestor",
         description=(
@@ -44,9 +43,10 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
 
+    # OParl-Spec verlangt: Access-Control-Allow-Origin: *
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["*"],

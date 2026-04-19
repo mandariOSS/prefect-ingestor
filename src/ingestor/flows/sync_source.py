@@ -145,6 +145,16 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
                     elif isinstance(res, int):
                         counts[field] = counts.get(field, 0) + res
 
+                # Eingebettete Objekte extrahieren (OParl 1.0 Kompatibilität)
+                from ingestor.flows.tasks.extract_embedded import extract_embedded_objects
+
+                try:
+                    embedded = await extract_embedded_objects(body_uuid)
+                    for key, val in embedded.items():
+                        counts[f"embedded_{key}"] = counts.get(f"embedded_{key}", 0) + val
+                except Exception as exc:
+                    errors.append(f"{body_json.get('shortName', '?')}.embedded: {exc}")
+
                 # Files aus Paper-JSON extrahieren (URLs weitergeben, nicht herunterladen)
                 from ingestor.flows.tasks.extract_files import extract_files_from_papers
 
