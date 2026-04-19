@@ -4,17 +4,16 @@ Revision ID: 0001
 Create Date: 2026-04-17
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
-from alembic import op
-
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -39,7 +38,12 @@ def upgrade() -> None:
     op.create_table(
         "bodies",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("source_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("sources.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "source_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("sources.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.String(500), nullable=False),
         sa.Column("short_name", sa.String(100)),
@@ -59,7 +63,12 @@ def upgrade() -> None:
     op.create_table(
         "organizations",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.String(500), nullable=False),
         sa.Column("short_name", sa.String(100)),
@@ -81,7 +90,12 @@ def upgrade() -> None:
     op.create_table(
         "persons",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.String(500), nullable=False),
         sa.Column("family_name", sa.String(200)),
@@ -107,8 +121,18 @@ def upgrade() -> None:
     op.create_table(
         "memberships",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("person_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("organization_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "person_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("persons.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "organization_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("role", sa.String(255)),
         sa.Column("voting_right", sa.Boolean, nullable=False, server_default="true"),
@@ -128,7 +152,12 @@ def upgrade() -> None:
     op.create_table(
         "legislative_terms",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("start_date", sa.Date),
@@ -146,7 +175,12 @@ def upgrade() -> None:
     op.create_table(
         "meetings",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.String(1000)),
         sa.Column("start", sa.DateTime(timezone=True)),
@@ -171,7 +205,12 @@ def upgrade() -> None:
     op.create_table(
         "agenda_items",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("meeting_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "meeting_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("meetings.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("number", sa.String(50)),
         sa.Column("name", sa.Text),
@@ -192,7 +231,12 @@ def upgrade() -> None:
     op.create_table(
         "papers",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.Text),
         sa.Column("reference", sa.String(255)),
@@ -216,9 +260,20 @@ def upgrade() -> None:
     op.create_table(
         "consultations",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("paper_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("papers.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("meeting_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("meetings.id", ondelete="SET NULL")),
-        sa.Column("agenda_item_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agenda_items.id", ondelete="SET NULL")),
+        sa.Column(
+            "paper_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("papers.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "meeting_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("meetings.id", ondelete="SET NULL")
+        ),
+        sa.Column(
+            "agenda_item_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agenda_items.id", ondelete="SET NULL"),
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("role", sa.String(100)),
         sa.Column("authoritative", sa.Boolean, nullable=False, server_default="false"),
@@ -236,9 +291,16 @@ def upgrade() -> None:
     op.create_table(
         "files",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("paper_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("papers.id", ondelete="SET NULL")),
-        sa.Column("meeting_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("meetings.id", ondelete="SET NULL")),
+        sa.Column(
+            "meeting_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("meetings.id", ondelete="SET NULL")
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("name", sa.Text),
         sa.Column("file_name", sa.String(500)),
@@ -270,7 +332,12 @@ def upgrade() -> None:
     op.create_table(
         "locations",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("body_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bodies.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "body_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bodies.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("external_id", sa.Text, nullable=False),
         sa.Column("description", sa.Text),
         sa.Column("street_address", sa.Text),
@@ -292,7 +359,9 @@ def upgrade() -> None:
     op.create_table(
         "sync_logs",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("source_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("sources.id", ondelete="SET NULL")),
+        sa.Column(
+            "source_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("sources.id", ondelete="SET NULL")
+        ),
         sa.Column("flow_run_id", sa.String(64)),
         sa.Column("sync_type", sa.String(20), nullable=False),
         sa.Column("status", sa.String(20), nullable=False),
@@ -310,7 +379,12 @@ def upgrade() -> None:
     op.create_table(
         "extraction_jobs",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("file_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "file_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("files.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("method", sa.String(20), nullable=False),
         sa.Column("status", sa.String(20), nullable=False, server_default="'pending'"),
         sa.Column("error", sa.Text),

@@ -29,11 +29,10 @@ from uuid import UUID
 
 import httpx
 from prefect import flow, get_run_logger, task
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 
-from ingestor.config import get_settings
 from ingestor.db import get_session
-from ingestor.db.models import Location, Meeting
+from ingestor.db.models import Location
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +74,7 @@ async def geocode_address(address: str, locality: str | None = None) -> dict | N
                 "lon": float(results[0]["lon"]),
                 "display_name": results[0].get("display_name"),
             }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Geocode failed for '%s': %s", query, exc)
         return None
 
@@ -89,16 +88,20 @@ async def geocode_locations(body_id: UUID, max_concurrent: int = 3) -> dict:
 
     async with get_session() as session:
         locations = (
-            await session.execute(
-                select(Location).where(
-                    and_(
-                        Location.body_id == body_id,
-                        Location.latitude.is_(None),
-                        Location.street_address.is_not(None),
+            (
+                await session.execute(
+                    select(Location).where(
+                        and_(
+                            Location.body_id == body_id,
+                            Location.latitude.is_(None),
+                            Location.street_address.is_not(None),
+                        )
                     )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     log.info("Geocoding %d locations for body %s", len(locations), body_id)
 
@@ -121,7 +124,7 @@ async def geocode_locations(body_id: UUID, max_concurrent: int = 3) -> dict:
                 await session.flush()
             return True
 
-    results = await asyncio.gather(*[process_location(l) for l in locations], return_exceptions=True)
+    results = await asyncio.gather(*[process_location(loc) for loc in locations], return_exceptions=True)
     success = sum(1 for r in results if r is True)
 
     log.info("Geocoded %d/%d locations", success, len(locations))

@@ -1,6 +1,5 @@
 """Management-API: Sources verwalten, Jobs triggern, Logs ansehen, Statistiken."""
 
-from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -114,7 +113,7 @@ async def trigger_sync(source_id: UUID, payload: SyncRequest, session: SessionDe
             flow_run_id=str(flow_run.id),
             message=f"Sync triggered (full={payload.full})",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Fallback: Direkt asynchron starten ohne Prefect-Deployment
         # (für Setups ohne Prefect-Server)
         import asyncio
@@ -174,9 +173,7 @@ async def get_stats(session: SessionDep) -> StatsOut:
     ).scalar_one()
 
     files_with_text = (
-        await session.execute(
-            select(func.count()).select_from(File).where(File.text_content.is_not(None))
-        )
+        await session.execute(select(func.count()).select_from(File).where(File.text_content.is_not(None)))
     ).scalar_one()
 
     return StatsOut(

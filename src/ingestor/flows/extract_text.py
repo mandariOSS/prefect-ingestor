@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
 from prefect import flow, get_run_logger, task
-from sqlalchemy import select, and_
+from sqlalchemy import select
 
-from ingestor.config import get_settings
 from ingestor.db import get_session
 from ingestor.db.models import File
 
@@ -71,7 +70,7 @@ async def download_and_extract(file_id: UUID) -> dict:
             await _update_status(file_id, "skipped", f"Zu groß: {len(data)} bytes")
             return {"error": "Too large"}
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await _update_status(file_id, "failed", f"Download: {exc}")
         return {"error": str(exc)}
 
@@ -109,6 +108,7 @@ def _extract_pdf(data: bytes) -> tuple[str, int | None, str]:
     """Extrahiert Text aus PDF via pypdf. Gibt (text, page_count, method) zurück."""
     try:
         import io
+
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(data))
@@ -140,8 +140,8 @@ def _extract_pdf(data: bytes) -> tuple[str, int | None, str]:
 def _ocr_extract(data: bytes) -> tuple[str, bool]:
     """OCR via Tesseract (pdf2image + pytesseract)."""
     try:
-        from pdf2image import convert_from_bytes
         import pytesseract
+        from pdf2image import convert_from_bytes
 
         images = convert_from_bytes(data, dpi=200, first_page=1, last_page=5)
         texts = []
@@ -161,12 +161,10 @@ async def _update_status(file_id: UUID, status: str, error: str | None = None) -
         if f:
             f.text_extraction_status = status
             f.text_extraction_error = error
-            f.text_extracted_at = datetime.now(timezone.utc)
+            f.text_extracted_at = datetime.now(UTC)
 
 
-async def _save_text(
-    file_id: UUID, text: str, method: str, page_count: int | None, sha256: str
-) -> None:
+async def _save_text(file_id: UUID, text: str, method: str, page_count: int | None, sha256: str) -> None:
     async with get_session() as session:
         f = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
         if f:
@@ -175,7 +173,7 @@ async def _save_text(
             f.text_extraction_method = method
             f.page_count = page_count
             f.sha256_hash = sha256
-            f.text_extracted_at = datetime.now(timezone.utc)
+            f.text_extracted_at = datetime.now(UTC)
 
 
 @flow(name="extract-pending-texts", log_prints=True)
@@ -192,13 +190,17 @@ async def extract_pending_texts(batch_size: int = 50, max_concurrent: int = 3) -
 
     async with get_session() as session:
         pending = (
-            await session.execute(
-                select(File.id)
-                .where(File.text_extraction_status == "pending")
-                .order_by(File.created_at)
-                .limit(batch_size)
+            (
+                await session.execute(
+                    select(File.id)
+                    .where(File.text_extraction_status == "pending")
+                    .order_by(File.created_at)
+                    .limit(batch_size)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     if not pending:
         log.info("No pending files for extraction")

@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
 from prefect import flow, get_run_logger, task
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 
 from ingestor.db import get_session
 from ingestor.db.models import Body, Person
@@ -83,18 +83,20 @@ async def download_person_photo(person_id: UUID, photo_url: str) -> bool:
             return False
 
         async with get_session() as session:
-            person = (await session.execute(select(Person).where(Person.id == person_id))).scalar_one_or_none()
+            person = (
+                await session.execute(select(Person).where(Person.id == person_id))
+            ).scalar_one_or_none()
             if not person:
                 return False
 
             person.photo_data = data
             person.photo_mime_type = content_type
             person.photo_url = photo_url
-            person.photo_downloaded_at = datetime.now(timezone.utc)
+            person.photo_downloaded_at = datetime.now(UTC)
             await session.flush()
 
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Photo download failed for %s: %s", photo_url, exc)
         return False
 
@@ -115,12 +117,16 @@ async def fetch_person_photos(body_id: UUID, max_concurrent: int = 5) -> dict:
 
         # Personen ohne Foto laden
         persons = (
-            await session.execute(
-                select(Person).where(
-                    and_(Person.body_id == body_id, Person.photo_downloaded_at.is_(None))
+            (
+                await session.execute(
+                    select(Person).where(
+                        and_(Person.body_id == body_id, Person.photo_downloaded_at.is_(None))
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     log.info("Trying photos for %d persons in %s", len(persons), body.name)
 

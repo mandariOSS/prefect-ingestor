@@ -17,14 +17,9 @@ from sqlalchemy import select
 
 from ingestor.api.dependencies import SessionDep
 from ingestor.db.models import (
-    AgendaItem,
     Body,
-    Consultation,
     File,
-    LegislativeTerm,
-    Location,
     Meeting,
-    Membership,
     Organization,
     Paper,
     Person,
@@ -226,9 +221,7 @@ def _serialize_person(p: Person, request: Request) -> dict:
     }
 
 
-router.get("/body/{body_id}/persons")(
-    _make_list_endpoint(Person, "persons", _serialize_person)
-)
+router.get("/body/{body_id}/persons")(_make_list_endpoint(Person, "persons", _serialize_person))
 
 
 @router.get("/person/{pid}")
@@ -251,9 +244,7 @@ def _serialize_meeting(m: Meeting, request: Request) -> dict:
     }
 
 
-router.get("/body/{body_id}/meetings")(
-    _make_list_endpoint(Meeting, "meetings", _serialize_meeting)
-)
+router.get("/body/{body_id}/meetings")(_make_list_endpoint(Meeting, "meetings", _serialize_meeting))
 
 
 @router.get("/meeting/{mid}")
@@ -275,9 +266,7 @@ def _serialize_paper(p: Paper, request: Request) -> dict:
     }
 
 
-router.get("/body/{body_id}/papers")(
-    _make_list_endpoint(Paper, "papers", _serialize_paper)
-)
+router.get("/body/{body_id}/papers")(_make_list_endpoint(Paper, "papers", _serialize_paper))
 
 
 @router.get("/paper/{pid}")

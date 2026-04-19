@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from prefect import flow, get_run_logger, task
@@ -68,7 +68,7 @@ async def sync_body_endpoint(
         try:
             await upsert_entity(item, body_id=body_uuid)
             count += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Upsert failed for %s: %s", item.get("id"), exc)
     return count
 
@@ -86,7 +86,7 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
         Statistik-Dict {entities_synced, errors, duration_seconds, status}
     """
     log = get_run_logger()
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
 
     # Source aus DB laden
     async with get_session() as session:
@@ -147,19 +147,20 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
 
                 # Files aus Paper-JSON extrahieren (URLs weitergeben, nicht herunterladen)
                 from ingestor.flows.tasks.extract_files import extract_files_from_papers
+
                 try:
                     file_count = await extract_files_from_papers(body_uuid)
                     counts["files_extracted"] = counts.get("files_extracted", 0) + file_count
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     errors.append(f"{body_json.get('shortName', '?')}.files_extract: {exc}")
 
         status = "success" if not errors else "partial"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.exception("Sync failed: %s", exc)
         errors.append(str(exc))
         status = "failed"
 
-    finished = datetime.now(timezone.utc)
+    finished = datetime.now(UTC)
     duration = (finished - started).total_seconds()
 
     # Source-Status + SyncLog updaten

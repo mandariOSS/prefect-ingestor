@@ -14,7 +14,6 @@ from uuid import UUID
 from dateutil.parser import isoparse
 from prefect import task
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ingestor.db import get_session
 from ingestor.db.models import (
@@ -155,9 +154,15 @@ def _extract_type_specific_fields(oparl_type: OParlType, data: dict) -> dict[str
         fields["name"] = data.get("name") or ""
         fields["family_name"] = data.get("familyName")
         fields["given_name"] = data.get("givenName")
-        fields["title"] = data.get("title", [None])[0] if isinstance(data.get("title"), list) else data.get("title")
-        fields["email"] = data.get("email", [None])[0] if isinstance(data.get("email"), list) else data.get("email")
-        fields["phone"] = data.get("phone", [None])[0] if isinstance(data.get("phone"), list) else data.get("phone")
+        fields["title"] = (
+            data.get("title", [None])[0] if isinstance(data.get("title"), list) else data.get("title")
+        )
+        fields["email"] = (
+            data.get("email", [None])[0] if isinstance(data.get("email"), list) else data.get("email")
+        )
+        fields["phone"] = (
+            data.get("phone", [None])[0] if isinstance(data.get("phone"), list) else data.get("phone")
+        )
 
     elif oparl_type == OParlType.MEMBERSHIP:
         fields["role"] = data.get("role")

@@ -131,6 +131,7 @@ class OParlClient:
 
         try:
             import json
+
             return json.loads(text)
         except ValueError as exc:
             raise OParlClientError(f"Invalid JSON from {url}: {exc}") from exc

@@ -15,7 +15,7 @@ Audit-Tabellen: sources, sync_logs, extraction_jobs.
 
 from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -31,7 +31,8 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -113,7 +114,9 @@ class SyncLog(Base):
     )
     flow_run_id: Mapped[str | None] = mapped_column(String(64), index=True)
     sync_type: Mapped[str] = mapped_column(String(20), nullable=False)  # incremental | full
-    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # success | failed | partial | running
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True
+    )  # success | failed | partial | running
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -164,9 +167,7 @@ class Body(Base, TimestampMixin, OParlEntityMixin):
 
     source: Mapped[Source] = relationship(back_populates="bodies")
 
-    __table_args__ = (
-        UniqueConstraint("source_id", "external_id", name="uq_body_source_external"),
-    )
+    __table_args__ = (UniqueConstraint("source_id", "external_id", name="uq_body_source_external"),)
 
 
 class Organization(Base, TimestampMixin, OParlEntityMixin):
@@ -185,9 +186,7 @@ class Organization(Base, TimestampMixin, OParlEntityMixin):
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
 
-    __table_args__ = (
-        UniqueConstraint("body_id", "external_id", name="uq_org_body_external"),
-    )
+    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_org_body_external"),)
 
 
 class Person(Base, TimestampMixin, OParlEntityMixin):
@@ -212,9 +211,7 @@ class Person(Base, TimestampMixin, OParlEntityMixin):
     photo_mime_type: Mapped[str | None] = mapped_column(String(100))
     photo_data: Mapped[bytes | None] = mapped_column()  # BYTEA
 
-    __table_args__ = (
-        UniqueConstraint("body_id", "external_id", name="uq_person_body_external"),
-    )
+    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_person_body_external"),)
 
 
 class Membership(Base, TimestampMixin, OParlEntityMixin):
@@ -250,9 +247,7 @@ class LegislativeTerm(Base, TimestampMixin, OParlEntityMixin):
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
 
-    __table_args__ = (
-        UniqueConstraint("body_id", "external_id", name="uq_term_body_external"),
-    )
+    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_term_body_external"),)
 
 
 class Meeting(Base, TimestampMixin, OParlEntityMixin):
@@ -313,9 +308,7 @@ class Paper(Base, TimestampMixin, OParlEntityMixin):
     summary: Mapped[str | None] = mapped_column(Text)  # KI-generiert
     locations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
-    __table_args__ = (
-        UniqueConstraint("body_id", "external_id", name="uq_paper_body_external"),
-    )
+    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_paper_body_external"),)
 
 
 class Consultation(Base, TimestampMixin, OParlEntityMixin):

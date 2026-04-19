@@ -10,16 +10,14 @@ mit den originalen Download-URLs (kein Download der Dateien selbst).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from prefect import task
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from ingestor.db import get_session
 from ingestor.db.models import File, Paper
-from ingestor.oparl.types import OParlType
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +91,7 @@ async def _upsert_file(session: Any, file_data: str | dict, body_id: UUID, paper
 
     # Check ob schon existiert
     existing = (
-        await session.execute(
-            select(File).where(File.external_id == external_id, File.body_id == body_id)
-        )
+        await session.execute(select(File).where(File.external_id == external_id, File.body_id == body_id))
     ).scalar_one_or_none()
 
     if existing:
