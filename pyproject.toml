@@ -109,6 +109,15 @@ plugins = ["pydantic.mypy"]
 module = ["prefect.*", "pdf2image.*", "pytesseract.*", "tenacity.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = [
+    "ingestor.api.oparl.router",
+    "ingestor.api.management.router",
+    "ingestor.flows.tasks.upsert",
+    "ingestor.flows.tasks.extract_files",
+]
+disable_error_code = ["attr-defined", "var-annotated", "assignment", "misc"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

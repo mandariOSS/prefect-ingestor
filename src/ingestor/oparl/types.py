@@ -5,10 +5,10 @@ Jedes OParl-Objekt hat ein `type`-Feld mit einer URL, die den Typ identifiziert.
 Die Spezifikation erlaubt Variationen ("oparl/1.0/Body" vs "oparl/1.1/Body").
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class OParlType(str, Enum):
+class OParlType(StrEnum):
     """OParl-Entity-Typen."""
 
     SYSTEM = "System"
