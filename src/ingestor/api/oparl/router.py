@@ -258,9 +258,25 @@ def _make_body_list_endpoint(model, type_path: str, serialize_fn):
         modified_since: str | None = None,
     ) -> dict:
         ms = _parse_modified_since(modified_since)
-        stmt = select(model).where(model.body_id == body_id)
+
+        # Nicht alle Models haben body_id direkt (z.B. Membership, AgendaItem)
+        if hasattr(model, "body_id"):
+            stmt = select(model).where(model.body_id == body_id)
+        elif hasattr(model, "meeting_id"):
+            # AgendaItem: über Meeting.body_id filtern
+            stmt = (
+                select(model).join(Meeting, model.meeting_id == Meeting.id).where(Meeting.body_id == body_id)
+            )
+        elif hasattr(model, "person_id") and hasattr(model, "organization_id"):
+            # Membership: über Person.body_id filtern
+            stmt = select(model).join(Person, model.person_id == Person.id).where(Person.body_id == body_id)
+        elif hasattr(model, "paper_id"):
+            # Consultation: über Paper.body_id filtern
+            stmt = select(model).join(Paper, model.paper_id == Paper.id).where(Paper.body_id == body_id)
+        else:
+            stmt = select(model)
+
         if ms:
-            # Mit modified_since: auch gelöschte Objekte (OParl 1.1)
             stmt = stmt.where(model.oparl_modified >= ms)
         else:
             stmt = stmt.where(model.deleted.is_(False))
