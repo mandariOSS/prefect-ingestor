@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     #   Groq:     base_url=https://api.groq.com/openai/v1  model=llama-3.3-70b-versatile
     #   Ollama:   base_url=http://localhost:11434/v1    model=llama3.2-vision
 
+    # === Geocoding (Nominatim) ===
+    nominatim_url: str = "http://localhost:8088"  # Lokale Docker-Instanz
+
     # === Logging ===
     log_level: str = "INFO"
     log_format: str = "json"  # oder "console"

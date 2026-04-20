@@ -24,7 +24,7 @@ from prefect import task
 from sqlalchemy import select
 
 from ingestor.db import get_session
-from ingestor.db.models import Meeting, Paper, Person
+from ingestor.db.models import Location, Meeting, Paper, Person
 from ingestor.flows.tasks.upsert import upsert_entity
 
 logger = logging.getLogger(__name__)
@@ -39,9 +39,9 @@ async def extract_embedded_objects(body_id: UUID) -> dict:
     Bei 1.1 Quellen sind die Daten schon separat — Duplikate werden
     durch upsert via external_id verhindert.
 
-    Returns: {"memberships": int, "agenda_items": int, "consultations": int, "files": int}
+    Returns: {"memberships": int, "agenda_items": int, "consultations": int, "files": int, "locations": int}
     """
-    counts = {"memberships": 0, "agenda_items": 0, "consultations": 0, "files": 0}
+    counts = {"memberships": 0, "agenda_items": 0, "consultations": 0, "files": 0, "locations": 0}
 
     # 1. Memberships aus Person.membership[]
     async with get_session() as session:
@@ -136,9 +136,96 @@ async def extract_embedded_objects(body_id: UUID) -> dict:
                 if result:
                     counts["files"] += 1
 
+    # 4. Locations aus Meeting.location, Person.locationObject, Body.location, Organization.location
+    # Meetings haben oft ein inline location-Objekt mit Adresse
+    for meeting in meetings:
+        raw = meeting.raw or {}
+        loc_data = raw.get("location")
+        if isinstance(loc_data, dict) and loc_data.get("id"):
+            result = await upsert_entity(loc_data, body_id=body_id)
+            if result:
+                counts["locations"] += 1
+        elif isinstance(loc_data, dict) and loc_data.get("description"):
+            # Location ohne eigene id — erstelle synthetische
+            await _upsert_inline_location(loc_data, body_id, f"meeting:{meeting.external_id}")
+            counts["locations"] += 1
+
+    # Person.locationObject (OParl 1.1)
+    for person in persons:
+        raw = person.raw or {}
+        loc_data = raw.get("locationObject") or raw.get("location")
+        if isinstance(loc_data, dict):
+            if loc_data.get("id"):
+                result = await upsert_entity(loc_data, body_id=body_id)
+                if result:
+                    counts["locations"] += 1
+
+    # Paper.location[] (Array von inline-Locations)
+    for paper in papers:
+        raw = paper.raw or {}
+        paper_locations = raw.get("location") or []
+        if isinstance(paper_locations, list):
+            for loc_data in paper_locations:
+                if isinstance(loc_data, dict) and loc_data.get("id"):
+                    result = await upsert_entity(loc_data, body_id=body_id)
+                    if result:
+                        counts["locations"] += 1
+                elif isinstance(loc_data, dict) and loc_data.get("description"):
+                    await _upsert_inline_location(loc_data, body_id, f"paper:{paper.external_id}")
+                    counts["locations"] += 1
+
     logger.info(
         "Extracted embedded objects for body %s: %s",
         body_id,
         counts,
     )
     return counts
+
+
+async def _upsert_inline_location(loc_data: dict, body_id: UUID, context_id: str) -> None:
+    """
+    Erstellt einen Location-Eintrag aus einem inline-Location ohne eigene id.
+
+    Viele OParl-Server liefern Locations inline (ohne id-URL) mit nur
+    description/streetAddress. Wir erstellen einen synthetischen Eintrag.
+    """
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    description = loc_data.get("description", "")
+    street = loc_data.get("streetAddress", "")
+    synthetic_id = f"inline:{context_id}:{description}:{street}"
+
+    async with get_session() as session:
+        # Prüfe ob schon existiert
+        existing = (
+            await session.execute(
+                select(Location).where(Location.external_id == synthetic_id, Location.body_id == body_id)
+            )
+        ).scalar_one_or_none()
+
+        if existing:
+            return
+
+        loc = Location(
+            id=uuid4(),
+            body_id=body_id,
+            external_id=synthetic_id,
+            description=description,
+            street_address=street,
+            locality=loc_data.get("locality"),
+            postal_code=loc_data.get("postalCode"),
+            raw=loc_data,
+        )
+
+        # GeoJSON extrahieren falls vorhanden
+        geojson = loc_data.get("geojson")
+        if isinstance(geojson, dict):
+            geometry = geojson.get("geometry") or {}
+            coords = geometry.get("coordinates") or []
+            if len(coords) >= 2:
+                loc.longitude = coords[0]
+                loc.latitude = coords[1]
+
+        session.add(loc)

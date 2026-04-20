@@ -31,13 +31,11 @@ import httpx
 from prefect import flow, get_run_logger, task
 from sqlalchemy import and_, select
 
+from ingestor.config import get_settings
 from ingestor.db import get_session
 from ingestor.db.models import Location
 
 logger = logging.getLogger(__name__)
-
-# Lokale Nominatim-URL (Docker)
-NOMINATIM_URL = "http://localhost:8088"
 
 
 @task(name="geocode-address", retries=2, retry_delay_seconds=2)
@@ -52,9 +50,10 @@ async def geocode_address(address: str, locality: str | None = None) -> dict | N
         query = f"{address}, {locality}, Deutschland"
 
     try:
+        nominatim_url = get_settings().nominatim_url.rstrip("/")
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                f"{NOMINATIM_URL}/search",
+                f"{nominatim_url}/search",
                 params={
                     "q": query,
                     "format": "json",
