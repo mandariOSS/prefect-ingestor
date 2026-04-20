@@ -82,9 +82,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
       PREFECT_API_URL: ""
       LOG_LEVEL: INFO
-      # KI-API Keys für Stufe 3 Fallback (optional)
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # KI-API OCR Stufe 3 (optional, jede OpenAI-kompatible API)
+      OCR_AI_API_KEY: ${OCR_AI_API_KEY:-}
+      OCR_AI_BASE_URL: ${OCR_AI_BASE_URL:-https://api.mistral.ai/v1}
+      OCR_AI_MODEL: ${OCR_AI_MODEL:-mistral-ocr-latest}
     depends_on:
       postgres:
         condition: service_healthy

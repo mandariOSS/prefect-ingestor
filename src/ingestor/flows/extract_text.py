@@ -184,82 +184,120 @@ def _extract_tesseract(data: bytes) -> tuple[str, int | None]:
 
 async def _extract_ki_api(data: bytes, source_url: str) -> str:
     """
-    Stufe 3: KI-API OCR (Mistral oder Deepseek).
+    Stufe 3: KI-API OCR via OpenAI-kompatible API.
 
-    Sendet die PDF-URL (nicht die Bytes!) an die KI-API.
-    Die API lädt die PDF selbst herunter und extrahiert den Text.
+    Funktioniert mit JEDER OpenAI-kompatiblen API:
+    Mistral, Deepseek, OpenAI, Groq, Ollama, vLLM, LiteLLM, etc.
+
+    Konfiguration über .env:
+      OCR_AI_API_KEY=sk-...
+      OCR_AI_BASE_URL=https://api.mistral.ai/v1
+      OCR_AI_MODEL=mistral-ocr-latest
+
+    Ohne OCR_AI_API_KEY: Stufe 3 wird übersprungen (nur pypdf + Tesseract).
     """
     settings = get_settings()
 
-    # Mistral OCR (bevorzugt)
-    mistral_key = getattr(settings, "mistral_api_key", None)
-    if mistral_key:
-        try:
-            return await _mistral_ocr(source_url, mistral_key)
-        except Exception as exc:
-            logger.debug("Mistral OCR failed: %s", exc)
+    api_key = settings.ocr_ai_api_key
+    if not api_key:
+        # Keine KI konfiguriert — überspringe Stufe 3
+        return ""
 
-    # Deepseek OCR (Fallback)
-    deepseek_key = getattr(settings, "deepseek_api_key", None)
-    if deepseek_key:
-        try:
-            return await _deepseek_ocr(source_url, deepseek_key)
-        except Exception as exc:
-            logger.debug("Deepseek OCR failed: %s", exc)
+    base_url = settings.ocr_ai_base_url.rstrip("/")
+    model = settings.ocr_ai_model
 
-    return ""
+    # Spezialfall: Mistral OCR hat eigenen /ocr Endpoint
+    if "mistral" in base_url and "ocr" in model.lower():
+        return await _mistral_ocr_endpoint(source_url, api_key, base_url, model)
+
+    # Standard: OpenAI-kompatibles /chat/completions
+    return await _openai_compatible_ocr(source_url, api_key, base_url, model)
 
 
-async def _mistral_ocr(pdf_url: str, api_key: str) -> str:
-    """Mistral AI OCR via API."""
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            "https://api.mistral.ai/v1/ocr",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": "mistral-ocr-latest",
-                "document": {"type": "document_url", "document_url": pdf_url},
-            },
-        )
-        if response.status_code != 200:
-            logger.warning("Mistral OCR HTTP %d: %s", response.status_code, response.text[:200])
+async def _mistral_ocr_endpoint(pdf_url: str, api_key: str, base_url: str, model: str) -> str:
+    """Mistral hat einen eigenen /ocr Endpoint (nicht /chat/completions)."""
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{base_url}/ocr",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "document": {"type": "document_url", "document_url": pdf_url},
+                },
+            )
+            if response.status_code != 200:
+                logger.warning("Mistral OCR HTTP %d: %s", response.status_code, response.text[:200])
+                return ""
+            result = response.json()
+            pages = result.get("pages", [])
+            texts = [p.get("markdown", "") for p in pages]
+            return "\n\n".join(texts)
+    except Exception as exc:
+        logger.debug("Mistral OCR failed: %s", exc)
+        return ""
+
+
+async def _openai_compatible_ocr(pdf_url: str, api_key: str, base_url: str, model: str) -> str:
+    """
+    Generischer OpenAI-kompatibler OCR via /chat/completions.
+
+    Funktioniert mit: OpenAI, Deepseek, Groq, Ollama, vLLM, LiteLLM, etc.
+    Sendet die PDF-URL als image_url (Vision-API) an das Modell.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Du bist ein OCR-System. Extrahiere den gesamten Text "
+                                "aus dem Dokument. Gib NUR den extrahierten Text zurück, "
+                                "keine Kommentare, keine Formatierung, kein Markdown."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Extrahiere den vollständigen Text aus diesem Dokument:",
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": pdf_url},
+                                },
+                            ],
+                        },
+                    ],
+                    "max_tokens": 8192,
+                    "temperature": 0.0,
+                },
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    "KI-OCR HTTP %d (%s/%s): %s",
+                    response.status_code,
+                    base_url,
+                    model,
+                    response.text[:200],
+                )
+                return ""
+            result = response.json()
+            choices = result.get("choices", [])
+            if choices:
+                return choices[0].get("message", {}).get("content", "")
             return ""
-        result = response.json()
-        # Mistral gibt pages[] zurück, jede mit markdown_content
-        pages = result.get("pages", [])
-        texts = [p.get("markdown", "") for p in pages]
-        return "\n\n".join(texts)
-
-
-async def _deepseek_ocr(pdf_url: str, api_key: str) -> str:
-    """Deepseek Vision OCR via Chat-API."""
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            "https://api.deepseek.com/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": "deepseek-chat",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Extrahiere den gesamten Text aus diesem Dokument. Gib nur den extrahierten Text zurück, ohne Kommentare.",
-                            },
-                            {"type": "image_url", "image_url": {"url": pdf_url}},
-                        ],
-                    }
-                ],
-                "max_tokens": 4096,
-            },
-        )
-        if response.status_code != 200:
-            return ""
-        result = response.json()
-        choices = result.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
+    except Exception as exc:
+        logger.debug("KI-OCR failed (%s/%s): %s", base_url, model, exc)
         return ""
 
 

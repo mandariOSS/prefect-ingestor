@@ -57,8 +57,17 @@ class Settings(BaseSettings):
     ocr_max_file_size_mb: int = 50
 
     # === KI-API OCR (Stufe 3 Fallback, optional) ===
-    mistral_api_key: str | None = None
-    deepseek_api_key: str | None = None
+    # Jede OpenAI-kompatible API: Mistral, Deepseek, OpenAI, Groq, Ollama, etc.
+    # Ohne diese Keys läuft der OCR-Worker nur mit pypdf + Tesseract (kostenlos).
+    ocr_ai_api_key: str | None = None
+    ocr_ai_base_url: str = "https://api.mistral.ai/v1"  # OpenAI-kompatibel
+    ocr_ai_model: str = "mistral-ocr-latest"
+    # Beispiele:
+    #   Mistral:  base_url=https://api.mistral.ai/v1  model=mistral-ocr-latest
+    #   OpenAI:   base_url=https://api.openai.com/v1   model=gpt-4o
+    #   Deepseek: base_url=https://api.deepseek.com    model=deepseek-chat
+    #   Groq:     base_url=https://api.groq.com/openai/v1  model=llama-3.3-70b-versatile
+    #   Ollama:   base_url=http://localhost:11434/v1    model=llama3.2-vision
 
     # === Logging ===
     log_level: str = "INFO"
