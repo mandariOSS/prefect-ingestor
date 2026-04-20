@@ -60,9 +60,12 @@ async def extract_embedded_objects(body_id: UUID) -> dict:
         memberships = raw.get("membership") or []
         for m_data in memberships:
             if isinstance(m_data, dict) and m_data.get("id"):
-                result = await upsert_entity(m_data, body_id=body_id)
-                if result:
-                    counts["memberships"] += 1
+                try:
+                    result = await upsert_entity(m_data, body_id=body_id)
+                    if result:
+                        counts["memberships"] += 1
+                except Exception as exc:
+                    logger.debug("Membership upsert skipped: %s", exc)
 
     # 2. AgendaItems + Files aus Meeting
     async with get_session() as session:
@@ -83,17 +86,23 @@ async def extract_embedded_objects(body_id: UUID) -> dict:
         agenda_items = raw.get("agendaItem") or []
         for ai_data in agenda_items:
             if isinstance(ai_data, dict) and ai_data.get("id"):
-                result = await upsert_entity(ai_data, body_id=body_id)
-                if result:
-                    counts["agenda_items"] += 1
+                try:
+                    result = await upsert_entity(ai_data, body_id=body_id)
+                    if result:
+                        counts["agenda_items"] += 1
+                except Exception:
+                    pass
 
         # Files (invitation, resultsProtocol, verbatimProtocol, auxiliaryFile)
         for file_field in ["invitation", "resultsProtocol", "verbatimProtocol"]:
             file_data = raw.get(file_field)
             if isinstance(file_data, dict) and file_data.get("id"):
-                result = await upsert_entity(file_data, body_id=body_id)
-                if result:
-                    counts["files"] += 1
+                try:
+                    result = await upsert_entity(file_data, body_id=body_id)
+                    if result:
+                        counts["files"] += 1
+                except Exception:
+                    pass
 
         aux_files = raw.get("auxiliaryFile") or []
         for f_data in aux_files:
