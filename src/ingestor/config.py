@@ -40,8 +40,21 @@ class Settings(BaseSettings):
     api_port: int = 8080
     api_key: str = Field(
         default="change-me",
-        description="Auth-Key für Management-API",
+        description="Bootstrap-API-Key für Management-API (nur wenn keine Keys in DB)",
     )
+    # Erlaubt Bootstrap-Betrieb mit Default-Key; in Prod MUSS False sein
+    dev_mode: bool = Field(
+        default=False,
+        description="Erlaubt Default-API-Key. NIEMALS in Produktion auf True.",
+    )
+    # Admin-CORS: strikte Liste, OParl bleibt offen (Spec verlangt *)
+    admin_cors_origins: str = Field(
+        default="http://localhost:8000",
+        description="Kommagetrennte Origins für /api/admin (Credentialed-CORS)",
+    )
+    # Rate-Limiting
+    rate_limit_default: str = "60/minute"
+    rate_limit_auth_failure: str = "5/minute"
 
     # === OParl-Sync ===
     sync_interval_minutes: int = 10
@@ -49,6 +62,16 @@ class Settings(BaseSettings):
     http_timeout_seconds: int = 60
     http_max_retries: int = 3
     http_user_agent: str = "Mandari-Ingestor/0.1 (https://mandari.de)"
+    # Maximale parallele Bodies pro Sync-Zyklus (begrenzt DB- und HTTP-Last).
+    sync_body_concurrency: int = 4
+    # Nach N aufeinander folgenden Fehlschlägen wird die Quelle automatisch
+    # in Quarantäne gesetzt (is_active=False, quarantined_at=now).
+    sync_quarantine_threshold: int = 10
+    # Timeout für den Sync einer einzelnen Quelle (verhindert "stuck sync").
+    sync_source_timeout_seconds: int = 1800  # 30 Min
+    # Enrichment nach Body-Sync automatisch triggern
+    enrichment_auto_photos: bool = True
+    enrichment_auto_geocoding: bool = False  # nur wenn NOMINATIM_URL konfiguriert
 
     # === OCR-Worker ===
     ocr_enabled: bool = True
@@ -82,6 +105,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def admin_cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.admin_cors_origins.split(",") if o.strip()]
 
 
 @lru_cache

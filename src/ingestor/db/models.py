@@ -95,6 +95,8 @@ class Source(Base, TimestampMixin):
     last_full_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     bodies: Mapped[list[Body]] = relationship(back_populates="source", cascade="all, delete-orphan")
@@ -125,6 +127,63 @@ class SyncLog(Base):
     entities_synced: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     errors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     triggered_by: Mapped[str] = mapped_column(String(20), nullable=False, default="schedule")
+
+
+class ApiKey(Base, TimestampMixin):
+    """
+    API-Key für Management-API-Zugriff.
+
+    Klartext wird NICHT gespeichert — nur der bcrypt-Hash. Beim Create wird
+    der Klartext einmalig zurückgegeben, danach gibt es keinen Weg ihn
+    wiederzubekommen (Auth-Hygiene).
+
+    `prefix` sind die ersten 8 Zeichen des Klartexts — wird mit angezeigt,
+    damit Admins Keys in Logs identifizieren können (ohne Klartext zu kennen).
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # bcrypt-hash des Klartext-Keys
+    key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Erste 8 Zeichen des Keys zum Identifizieren
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # Erlaubte Scopes, kommagetrennt: read, write, admin
+    scopes: Mapped[str] = mapped_column(String(100), nullable=False, default="read")
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_ip: Mapped[str | None] = mapped_column(String(45))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    def __repr__(self) -> str:
+        return f"<ApiKey {self.name} ({self.prefix}…)>"
+
+
+class AuditLog(Base):
+    """Audit-Trail für die Management-API — wer hat was wann gemacht."""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    # Welcher Key — null wenn Bootstrap-Key (aus env) verwendet wurde
+    api_key_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("api_keys.id", ondelete="SET NULL"), index=True
+    )
+    # Display-Name zum Identifizieren auch nach Key-Löschung
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    resource_type: Mapped[str | None] = mapped_column(String(50))
+    resource_id: Mapped[str | None] = mapped_column(String(100))
+    ip_address: Mapped[str | None] = mapped_column(String(45))
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (Index("ix_audit_action_ts", "action", "timestamp"),)
 
 
 class ExtractionJob(Base):
@@ -186,7 +245,10 @@ class Organization(Base, TimestampMixin, OParlEntityMixin):
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
 
-    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_org_body_external"),)
+    __table_args__ = (
+        UniqueConstraint("body_id", "external_id", name="uq_org_body_external"),
+        Index("ix_org_body_modified", "body_id", "oparl_modified"),
+    )
 
 
 class Person(Base, TimestampMixin, OParlEntityMixin):
@@ -211,7 +273,10 @@ class Person(Base, TimestampMixin, OParlEntityMixin):
     photo_mime_type: Mapped[str | None] = mapped_column(String(100))
     photo_data: Mapped[bytes | None] = mapped_column()  # BYTEA
 
-    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_person_body_external"),)
+    __table_args__ = (
+        UniqueConstraint("body_id", "external_id", name="uq_person_body_external"),
+        Index("ix_person_body_modified", "body_id", "oparl_modified"),
+    )
 
 
 class Membership(Base, TimestampMixin, OParlEntityMixin):
@@ -247,7 +312,10 @@ class LegislativeTerm(Base, TimestampMixin, OParlEntityMixin):
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
 
-    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_term_body_external"),)
+    __table_args__ = (
+        UniqueConstraint("body_id", "external_id", name="uq_term_body_external"),
+        Index("ix_term_body_modified", "body_id", "oparl_modified"),
+    )
 
 
 class Meeting(Base, TimestampMixin, OParlEntityMixin):
@@ -270,6 +338,7 @@ class Meeting(Base, TimestampMixin, OParlEntityMixin):
     __table_args__ = (
         UniqueConstraint("body_id", "external_id", name="uq_meeting_body_external"),
         Index("ix_meeting_body_start", "body_id", "start"),
+        Index("ix_meeting_body_modified", "body_id", "oparl_modified"),
     )
 
 
@@ -308,7 +377,11 @@ class Paper(Base, TimestampMixin, OParlEntityMixin):
     summary: Mapped[str | None] = mapped_column(Text)  # KI-generiert
     locations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
-    __table_args__ = (UniqueConstraint("body_id", "external_id", name="uq_paper_body_external"),)
+    __table_args__ = (
+        UniqueConstraint("body_id", "external_id", name="uq_paper_body_external"),
+        Index("ix_paper_body_modified", "body_id", "oparl_modified"),
+        Index("ix_paper_body_date", "body_id", "date"),
+    )
 
 
 class Consultation(Base, TimestampMixin, OParlEntityMixin):
@@ -364,6 +437,12 @@ class File(Base, TimestampMixin, OParlEntityMixin):
     text_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     page_count: Mapped[int | None] = mapped_column(Integer)
 
+    __table_args__ = (
+        Index("ix_file_body_modified", "body_id", "oparl_modified"),
+        # OCR-Worker claim query: WHERE status=pending ORDER BY created_at
+        Index("ix_file_ocr_claim", "text_extraction_status", "created_at"),
+    )
+
 
 class Location(Base, TimestampMixin, OParlEntityMixin):
     """Ort/Adresse."""
@@ -381,3 +460,7 @@ class Location(Base, TimestampMixin, OParlEntityMixin):
     region: Mapped[str | None] = mapped_column(String(100))
     latitude: Mapped[float | None] = mapped_column()
     longitude: Mapped[float | None] = mapped_column()
+
+    __table_args__ = (
+        Index("ix_location_body_modified", "body_id", "oparl_modified"),
+    )
