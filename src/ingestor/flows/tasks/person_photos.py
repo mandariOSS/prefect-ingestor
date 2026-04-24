@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
-from prefect import flow, get_run_logger, task
+from prefect import flow, get_run_logger
 from sqlalchemy import and_, select
 
 from ingestor.db import get_session
@@ -64,7 +64,6 @@ def _build_photo_url(person_external_id: str, body_raw: dict) -> str | None:
     return f"{base}/image"
 
 
-@task(name="download-person-photo", retries=1, retry_delay_seconds=5)
 async def download_person_photo(person_id: UUID, photo_url: str) -> bool:
     """Lädt ein einzelnes Personenbild herunter und speichert es in der DB."""
     try:

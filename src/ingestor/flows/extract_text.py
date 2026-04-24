@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
-from prefect import flow, get_run_logger, task
+from prefect import flow, get_run_logger
 from sqlalchemy import select, update
 
 from ingestor.config import get_settings
@@ -42,7 +42,6 @@ MIN_TEXT_LENGTH = 50  # Mindestens 50 Zeichen für "gültigen" Text
 # =============================================================================
 
 
-@task(name="ocr-extract-file", retries=1, retry_delay_seconds=10)
 async def ocr_extract_file(file_id: UUID) -> dict:
     """
     Lädt eine Datei herunter und extrahiert Text.

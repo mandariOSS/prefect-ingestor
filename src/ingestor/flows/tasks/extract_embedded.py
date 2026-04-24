@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from prefect import task
 from sqlalchemy import select
 
 from ingestor.db import get_session
@@ -30,7 +29,6 @@ from ingestor.flows.tasks.upsert import upsert_entity
 logger = logging.getLogger(__name__)
 
 
-@task(name="extract-embedded-objects", retries=1)
 async def extract_embedded_objects(body_id: UUID) -> dict:
     """
     Extrahiert eingebettete Objekte aus raw-JSON für einen Body.

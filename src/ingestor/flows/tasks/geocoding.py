@@ -28,7 +28,7 @@ import logging
 from uuid import UUID
 
 import httpx
-from prefect import flow, get_run_logger, task
+from prefect import flow, get_run_logger
 from sqlalchemy import and_, select
 
 from ingestor.config import get_settings
@@ -38,7 +38,6 @@ from ingestor.db.models import Location
 logger = logging.getLogger(__name__)
 
 
-@task(name="geocode-address", retries=2, retry_delay_seconds=2)
 async def geocode_address(address: str, locality: str | None = None) -> dict | None:
     """
     Löst eine Adresse in Koordinaten auf via lokaler Nominatim.

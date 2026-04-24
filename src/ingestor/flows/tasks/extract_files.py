@@ -13,7 +13,6 @@ import logging
 from typing import Any
 from uuid import UUID, uuid4
 
-from prefect import task
 from sqlalchemy import select
 
 from ingestor.db import get_session
@@ -22,7 +21,6 @@ from ingestor.db.models import File, Paper
 logger = logging.getLogger(__name__)
 
 
-@task(name="extract-files-from-papers", retries=1)
 async def extract_files_from_papers(body_id: UUID) -> int:
     """
     Extrahiert File-Referenzen aus gesynchten Paper-JSONB-Daten.

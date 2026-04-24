@@ -12,7 +12,6 @@ from typing import Any
 from uuid import UUID
 
 from dateutil.parser import isoparse
-from prefect import task
 from sqlalchemy import select
 
 from ingestor.db import get_session
@@ -63,7 +62,6 @@ def _parse_date(value: Any):
     return dt.date() if dt else None
 
 
-@task(name="upsert-oparl-entity", retries=2, retry_delay_seconds=5)
 async def upsert_entity(
     data: dict,
     body_id: UUID | None = None,
