@@ -56,8 +56,9 @@ prefect.db
 *.log
 logs/
 
-# Data
-data/
+# Data (lokale Dumps/Cache) — Seed-CSV ist Teil des Repos
+data/*
+!data/sources.csv
 media/
 uploads/
 *.sqlite
