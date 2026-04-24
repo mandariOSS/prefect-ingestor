@@ -2,9 +2,14 @@
 # Mandari Prefect Ingestor — Docker-Compose
 # =============================================================================
 # Startet:
-#   - postgres         Datenbank
-#   - api              FastAPI (OParl + Management-API)
-#   - nominatim        Lokale Geocoding-Instanz (nur DE, ~3GB)
+#   - postgres         Datenbank (mit Healthcheck)
+#   - api              FastAPI (OParl + Management-API), führt Migrationen
+#                      beim Start aus, Healthcheck über /health/live
+#   - scheduler        Sync-Loop (alle SYNC_INTERVAL_MINUTES), täglicher
+#                      Full-Sync, Source-Seed beim ersten Start
+#   - ocr-worker       PDF-Textextraktion (Hintergrund)
+# Hinweis: Nominatim (Geocoding) wurde entfernt — bei Bedarf public
+# Nominatim-Instanz verwenden (NOMINATIM_URL in .env).
 # =============================================================================
 
 name: mandari-ingestor
@@ -41,6 +46,7 @@ services:
     image: mandari-ingestor:dev
     container_name: ingestor-api
     restart: unless-stopped
+    command: ["ingestor-api"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
       API_KEY: ${API_KEY:-dev-key}
@@ -48,10 +54,46 @@ services:
       LOG_FORMAT: console
       PREFECT_API_URL: ""
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "${API_PORT:-9080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - ingestor
+
+  # ===========================================================================
+  # Scheduler — periodischer Sync-Loop (ohne Prefect-Server)
+  # Incremental alle SYNC_INTERVAL_MINUTES, Full-Sync täglich FULL_SYNC_HOUR UTC
+  # ===========================================================================
+  scheduler:
+    image: mandari-ingestor:dev
+    container_name: ingestor-scheduler
+    restart: unless-stopped
+    command: ["ingestor-scheduler"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
+      PREFECT_API_URL: ""
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-10}
+      FULL_SYNC_HOUR: ${FULL_SYNC_HOUR:-3}
+      SYNC_BODY_CONCURRENCY: ${SYNC_BODY_CONCURRENCY:-4}
+      SYNC_QUARANTINE_THRESHOLD: ${SYNC_QUARANTINE_THRESHOLD:-10}
+      ENRICHMENT_AUTO_PHOTOS: ${ENRICHMENT_AUTO_PHOTOS:-true}
+      ENRICHMENT_AUTO_GEOCODING: ${ENRICHMENT_AUTO_GEOCODING:-false}
+      NOMINATIM_URL: ${NOMINATIM_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
     networks:
       - ingestor
 
@@ -59,29 +101,16 @@ services:
   # OCR-Worker — Eigenständiger Service für PDF-Textextraktion
   # ===========================================================================
   ocr-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: mandari-ingestor:dev
     container_name: ingestor-ocr-worker
     restart: unless-stopped
-    command: >
-      python -c "
-      import asyncio, time, os
-      os.environ['PREFECT_API_URL'] = ''
-      from ingestor.flows.extract_text import ocr_worker_flow
-      while True:
-          try:
-              result = asyncio.run(ocr_worker_flow(batch_size=30, max_concurrent=2))
-              print(f'OCR: {result}', flush=True)
-          except Exception as e:
-              print(f'OCR error: {e}', flush=True)
-          time.sleep(300)
-      "
+    command: ["ingestor-ocr"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
       PREFECT_API_URL: ""
-      LOG_LEVEL: INFO
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OCR_BATCH_SIZE: ${OCR_BATCH_SIZE:-30}
+      OCR_CONCURRENCY: ${OCR_CONCURRENCY:-2}
       # KI-API OCR Stufe 3 (optional, jede OpenAI-kompatible API)
       OCR_AI_API_KEY: ${OCR_AI_API_KEY:-}
       OCR_AI_BASE_URL: ${OCR_AI_BASE_URL:-https://api.mistral.ai/v1}
@@ -89,40 +118,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
     mem_limit: 1g
     networks:
       - ingestor
 
-  # ===========================================================================
-  # Nominatim — Lokale Geocoding-Instanz (nur Deutschland)
-  # ===========================================================================
-  # Erster Start: ~2-4h Import der DE-Daten (~3GB Download, ~10GB DB)
-  # Danach: Unbegrenzte Anfragen, kein Rate-Limit
-  # ===========================================================================
-  nominatim:
-    image: mediagis/nominatim:4.5
-    container_name: ingestor-nominatim
-    restart: unless-stopped
-    environment:
-      PBF_URL: https://download.geofabrik.de/europe/germany-latest.osm.pbf
-      REPLICATION_URL: https://download.geofabrik.de/europe/germany-updates/
-      NOMINATIM_PASSWORD: nominatim
-      IMPORT_STYLE: street
-    volumes:
-      - nominatim_data:/var/lib/postgresql/14/main
-    ports:
-      - "8088:8080"
-    shm_size: 1g
-    networks:
-      - ingestor
-    profiles:
-      - geocoding   # Optional: nur mit `docker compose --profile geocoding up`
-
 volumes:
   postgres_data:
     name: mandari_ingestor_postgres
-  nominatim_data:
-    name: mandari_ingestor_nominatim
 
 networks:
   ingestor:

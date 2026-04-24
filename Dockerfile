@@ -46,16 +46,18 @@ RUN useradd --create-home --shell /bin/bash ingestor
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Application-Code
+# Application-Code + Source-Seed-Daten
 COPY --chown=ingestor:ingestor src/ ./src/
 COPY --chown=ingestor:ingestor alembic.ini ./
+COPY --chown=ingestor:ingestor data/ ./data/
 
 USER ingestor
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -sf http://localhost:8080/health || exit 1
+# Liveness-Probe (kein externer DB-Call)
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -sf http://localhost:8080/health/live || exit 1
 
-# Default: API starten
+# Default: API starten. Scheduler und OCR-Worker überschreiben das via command
 CMD ["uvicorn", "ingestor.api.main:app", "--host", "0.0.0.0", "--port", "8080"]

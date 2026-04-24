@@ -34,6 +34,11 @@ dependencies = [
     # Auth
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7",
+    "bcrypt>=4.0",
+    # Rate-Limiting
+    "slowapi>=0.1.9",
+    # File-Upload
+    "python-multipart>=0.0.12",
     # Utils
     "python-dateutil>=2.9",
     "tenacity>=9.0",            # zusätzliche Retry-Patterns
@@ -53,8 +58,11 @@ dev = [
 ]
 
 [project.scripts]
-ingestor-api = "ingestor.api.main:run"
+ingestor-api = "ingestor.workers.api_entrypoint:main"
+ingestor-scheduler = "ingestor.workers.scheduler:main"
+ingestor-ocr = "ingestor.workers.ocr:main"
 ingestor-flow = "ingestor.flows.cli:app"
+ingestor-seed = "ingestor.workers.seed:seed_sources_if_empty"
 
 [build-system]
 requires = ["hatchling"]
@@ -121,4 +129,7 @@ disable_error_code = ["attr-defined", "var-annotated", "assignment", "misc"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=ingestor --cov-report=term-missing"
+addopts = "-ra --strict-markers"
+markers = [
+    "db: Integration-Test — braucht eine laufende Postgres (DATABASE_URL_TEST)",
+]
