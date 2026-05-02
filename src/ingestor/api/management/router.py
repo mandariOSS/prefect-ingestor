@@ -436,15 +436,11 @@ async def trigger_enrichment(
     except Exception as exc:
         logger.warning("Photo enrichment failed: %s", exc)
 
-    if settings.enrichment_auto_geocoding:
-        try:
-            from ingestor.flows.tasks.geocoding import geocode_locations
-
-            geo = await geocode_locations(body_id)
-            result.geocode_tried = geo.get("tried", 0)
-            result.geocode_success = geo.get("success", 0)
-        except Exception as exc:
-            logger.warning("Geocoding failed: %s", exc)
+    # Hinweis: Geocoding ist seit v0.2 in einem dedizierten Worker
+    # (workers/geocoding.py) ausgelagert, der strikt seriell und mit
+    # GEOCODING_INTERVAL_SECONDS (default 5s) zwischen Requests arbeitet —
+    # konform zur Nominatim-Usage-Policy. Hier kein synchroner Trigger mehr.
+    # Der Worker pickt neue Locations ohne lat/lon binnen Sekunden ab.
 
     await write_audit_log(
         session, auth, "body.enrich", "body", str(body_id),

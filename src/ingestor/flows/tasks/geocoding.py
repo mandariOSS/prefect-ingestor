@@ -1,133 +1,124 @@
 """
-Task: Geo-Anreicherung von Meetings/Locations via Nominatim.
+Geocoding-Tasks via Nominatim (OpenStreetMap).
 
-Nutzt eine lokale Nominatim-Instanz (Docker, nur DE-Daten ~3GB)
-um Adressen in Koordinaten aufzulösen.
+Architektur (seit v0.2):
+    1. Adressen werden während des Sync-Flows NICHT mehr direkt geocodet.
+    2. Stattdessen schreibt der Sync nur die Adress-Spalten (street_address,
+       locality) in die Location-Tabelle.
+    3. Der dedizierte GeocodingWorker (siehe workers/geocoding.py) pickt
+       fehlende Geo-Koordinaten Stück für Stück ab — strikt seriell, mit
+       konfigurierbarem Sleep zwischen Requests, damit die Public-Nominatim-
+       Usage-Policy (≤ 1 Request pro Sekunde) sicher eingehalten wird.
 
-Docker-Compose für lokale Nominatim:
-    nominatim:
-        image: mediagis/nominatim:4.5
-        container_name: ingestor-nominatim
-        environment:
-            PBF_URL: https://download.geofabrik.de/europe/germany-latest.osm.pbf
-            REPLICATION_URL: https://download.geofabrik.de/europe/germany-updates/
-            NOMINATIM_PASSWORD: nominatim
-        volumes:
-            - nominatim_data:/var/lib/postgresql/14/main
-        ports:
-            - "8088:8080"
+    4. Diese Datei stellt nur die *Low-Level-Funktion* `geocode_address()`
+       bereit (eine einzelne HTTP-Anfrage), die vom Worker im Loop benutzt
+       wird. Kein paralleles Geocoding mehr im Flow.
 
-~3GB Download, ~10GB DB, initialer Import ~2-4h.
-Danach: Unbegrenzte Anfragen, keine Rate-Limits.
+Public Nominatim Usage Policy (Stand 2026):
+    https://operations.osmfoundation.org/policies/nominatim/
+    - Maximal 1 Anfrage pro Sekunde
+    - Pflicht-Header: User-Agent mit identifizierbarer App + Kontakt
+    - Caching der Ergebnisse zwingend
+    - Bei größerem Volumen: eigene Instanz aufsetzen
+
+Eigenbetrieb (optional, wenn Volumen groß wird):
+    Lokale Nominatim-Instanz nach Anleitung
+    https://nominatim.org/release-docs/latest/admin/Installation/
+    Mandari-Stack hat sie BEWUSST nicht im docker-compose, weil ~10 GB DB +
+    2-4 h Initial-Import die meisten Self-Hoster überfordert. Wer sie braucht,
+    setzt NOMINATIM_URL auf die eigene Instanz und kann den Worker auf
+    GEOCODING_INTERVAL_SECONDS=0.1 oder ähnlich beschleunigen.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from uuid import UUID
 
 import httpx
-from prefect import flow, get_run_logger
-from sqlalchemy import and_, select
 
 from ingestor.config import get_settings
-from ingestor.db import get_session
-from ingestor.db.models import Location
 
 logger = logging.getLogger(__name__)
 
 
-async def geocode_address(address: str, locality: str | None = None) -> dict | None:
-    """
-    Löst eine Adresse in Koordinaten auf via lokaler Nominatim.
+async def geocode_address(
+    address: str,
+    locality: str | None = None,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict | None:
+    """Löst eine einzelne Adresse in Koordinaten auf.
 
-    Returns: {"lat": float, "lon": float} oder None.
+    Args:
+        address: Straße + Hausnummer, z.B. "Musterstraße 42"
+        locality: Optional Ort/Stadt, wird angehängt für bessere Treffer
+        client: Optional vorhandener AsyncClient (Worker reused den Client
+                über alle Iterationen — spart TCP-Handshakes)
+
+    Returns:
+        ``{"lat": float, "lon": float, "display_name": str}`` bei Treffer,
+        ``None`` bei keinem Treffer oder Fehler.
+
+    Wirft KEINE Exceptions — alle Fehler werden geloggt und None zurückgegeben.
+    Der Worker entscheidet, was bei None passiert (skip, retry-counter ++, …).
     """
+    settings = get_settings()
+    nominatim_url = settings.nominatim_url.rstrip("/")
+    if not nominatim_url:
+        logger.debug("NOMINATIM_URL leer — geocoding deaktiviert")
+        return None
+
     query = address
     if locality:
         query = f"{address}, {locality}, Deutschland"
 
+    headers = {
+        # Pflicht laut Nominatim Usage Policy
+        "User-Agent": settings.nominatim_user_agent,
+        "Accept": "application/json",
+        "Accept-Language": "de",
+    }
+    params = {
+        "q": query,
+        "format": "json",
+        "limit": 1,
+        "countrycodes": "de",
+        "addressdetails": 0,
+    }
+    if settings.nominatim_email:
+        params["email"] = settings.nominatim_email
+
     try:
-        nominatim_url = get_settings().nominatim_url.rstrip("/")
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        if client is None:
+            async with httpx.AsyncClient(timeout=15.0, headers=headers) as ad_hoc:
+                response = await ad_hoc.get(f"{nominatim_url}/search", params=params)
+        else:
             response = await client.get(
                 f"{nominatim_url}/search",
-                params={
-                    "q": query,
-                    "format": "json",
-                    "limit": 1,
-                    "countrycodes": "de",
-                },
+                params=params,
+                headers=headers,
             )
-            if response.status_code != 200:
-                return None
 
-            results = response.json()
-            if not results:
-                return None
+        if response.status_code == 429:
+            logger.warning(
+                "Nominatim rate-limited (HTTP 429) — Worker-Intervall vergrößern"
+            )
+            return None
+        if response.status_code != 200:
+            logger.debug(
+                "Nominatim HTTP %s for '%s'", response.status_code, query
+            )
+            return None
 
-            return {
-                "lat": float(results[0]["lat"]),
-                "lon": float(results[0]["lon"]),
-                "display_name": results[0].get("display_name"),
-            }
-    except Exception as exc:
+        results = response.json()
+        if not results:
+            return None
+
+        return {
+            "lat": float(results[0]["lat"]),
+            "lon": float(results[0]["lon"]),
+            "display_name": results[0].get("display_name"),
+        }
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.debug("Geocode failed for '%s': %s", query, exc)
         return None
-
-
-@flow(name="geocode-locations", log_prints=True)
-async def geocode_locations(body_id: UUID, max_concurrent: int = 3) -> dict:
-    """
-    Löst alle Locations eines Bodies ohne Koordinaten auf.
-    """
-    log = get_run_logger()
-
-    async with get_session() as session:
-        locations = (
-            (
-                await session.execute(
-                    select(Location).where(
-                        and_(
-                            Location.body_id == body_id,
-                            Location.latitude.is_(None),
-                            Location.street_address.is_not(None),
-                        )
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    log.info("Geocoding %d locations for body %s", len(locations), body_id)
-
-    semaphore = asyncio.Semaphore(max_concurrent)
-    success = 0
-
-    async def process_location(loc: Location) -> bool:
-        async with semaphore:
-            result = await geocode_address(
-                loc.street_address or loc.description or "",
-                locality=loc.locality,
-            )
-            if not result:
-                return False
-
-            # Atomares Update NUR der Geo-Spalten (kein Konflikt mit Sync)
-            from sqlalchemy import update as sa_update
-
-            async with get_session() as session:
-                await session.execute(
-                    sa_update(Location)
-                    .where(Location.id == loc.id)
-                    .values(latitude=result["lat"], longitude=result["lon"])
-                )
-            return True
-
-    results = await asyncio.gather(*[process_location(loc) for loc in locations], return_exceptions=True)
-    success = sum(1 for r in results if r is True)
-
-    log.info("Geocoded %d/%d locations", success, len(locations))
-    return {"tried": len(locations), "success": success}

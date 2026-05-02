@@ -27,13 +27,13 @@ from prefect import flow, get_run_logger
 from prefect.exceptions import MissingContextError
 from sqlalchemy import select
 
+from ingestor.adapters import BaseAdapter, EntityType, get_adapter_class
 from ingestor.config import get_settings
 from ingestor.db import get_session
 from ingestor.db.models import Source, SyncLog
 from ingestor.flows.tasks.extract_embedded import extract_embedded_objects
 from ingestor.flows.tasks.extract_files import extract_files_from_papers
 from ingestor.flows.tasks.upsert import upsert_entity
-from ingestor.oparl import OParlClient
 
 logger = logging.getLogger(__name__)
 
@@ -45,80 +45,98 @@ def _logger() -> logging.Logger | logging.LoggerAdapter:
     except MissingContextError:
         return logger
 
-# Pro Body fetchen wir diese Endpoints (Reihenfolge: erst Stammdaten, dann Beziehungen)
-BODY_ENDPOINT_FIELDS = [
-    "legislativeTerm",
-    "organization",
-    "person",
-    "membership",
-    "meeting",
-    "paper",
-    "agendaItem",
-    "consultation",
-    "file",
-    "location",
+# Pro Body fetchen wir diese Entity-Typen (Reihenfolge: erst Stammdaten,
+# dann Beziehungen). Wird über die Adapter-Abstraktion geladen — der Adapter
+# entscheidet, ob er die Daten via OParl-HTTP oder via HTML-Scraping holt.
+BODY_ENTITY_TYPES: list[EntityType] = [
+    EntityType.LEGISLATIVE_TERM,
+    EntityType.ORGANIZATION,
+    EntityType.PERSON,
+    EntityType.MEMBERSHIP,
+    EntityType.MEETING,
+    EntityType.PAPER,
+    EntityType.AGENDA_ITEM,
+    EntityType.CONSULTATION,
+    EntityType.FILE,
+    EntityType.LOCATION,
 ]
 
 
-async def fetch_source_bodies(client: OParlClient, system_url: str) -> list[dict]:
-    """Lädt das System und alle Bodies. Retries werden vom OParlClient gehandhabt."""
+async def fetch_source_bodies(adapter: BaseAdapter) -> list[dict]:
+    """Lädt alle Bodies einer Quelle über den Adapter."""
     log = _logger()
-    log.info("Fetching system: %s", system_url)
-    system = await client.fetch_system(system_url)
-    bodies = [b async for b in client.fetch_bodies(system)]
+    log.info(
+        "Discovering bodies via %s for %s",
+        adapter.ADAPTER_TYPE,
+        adapter.source.system_url,
+    )
+    bodies = [b async for b in adapter.discover_bodies()]
     log.info("Found %d bodies", len(bodies))
     return bodies
 
 
 async def sync_body_endpoint(
-    client: OParlClient,
+    adapter: BaseAdapter,
+    body: dict,
     body_uuid: UUID,
-    list_url: str,
+    entity_type: EntityType,
     modified_since: datetime | None,
 ) -> int:
-    """
-    Synchronisiert eine einzelne Liste (z.B. Meetings eines Bodies).
+    """Synchronisiert eine einzelne Entity-Liste eines Bodies.
 
     Returns: Anzahl synchronisierter Entitäten.
+
+    Rezeptiv für ``NotImplementedError`` aus Skeleton-Adaptern: wir behandeln
+    sie als 0 Items (kein Fehler, weil "Adapter unterstützt diesen Typ noch
+    nicht" eine valide Übergangs-Situation ist während wir Skelette ausbauen).
     """
     count = 0
-    async for item in client.list_paginated(list_url, modified_since=modified_since):
-        try:
-            await upsert_entity(item, body_id=body_uuid)
-            count += 1
-        except Exception as exc:
-            logger.warning("Upsert failed for %s: %s", item.get("id"), exc)
+    try:
+        async for item in adapter.list_entities(
+            body, entity_type, modified_since=modified_since
+        ):
+            try:
+                await upsert_entity(item, body_id=body_uuid)
+                count += 1
+            except Exception as exc:
+                logger.warning("Upsert failed for %s: %s", item.get("id"), exc)
+    except NotImplementedError as exc:
+        # Skeleton-Adapter — kein Fehler, nur Hinweis im Log
+        logger.debug(
+            "%s: %s nicht implementiert — skip (%s)",
+            adapter.ADAPTER_TYPE,
+            entity_type.value,
+            exc,
+        )
     return count
 
 
 async def _sync_single_body(
-    client: OParlClient,
+    adapter: BaseAdapter,
     body_json: dict,
     body_uuid: UUID,
     modified_since: datetime | None,
 ) -> tuple[dict[str, int], list[str]]:
-    """
-    Synct einen einzelnen Body. Isoliert: Fehler pro Endpoint/Enrichment
-    werden gesammelt, killen aber nicht den gesamten Sync.
+    """Synct einen einzelnen Body über den Adapter.
+
+    Isoliert: Fehler pro Entity-Typ/Enrichment werden gesammelt, killen
+    aber nicht den gesamten Sync.
     """
     short = body_json.get("shortName", "?")
     counts: dict[str, int] = {}
     errors: list[str] = []
 
-    # Alle Endpoints parallel
-    url_fields = [(f, body_json.get(f)) for f in BODY_ENDPOINT_FIELDS]
+    # Alle Entity-Typen parallel laden
     tasks = [
-        sync_body_endpoint(client, body_uuid, url, modified_since=modified_since)
-        for _, url in url_fields
-        if url
+        sync_body_endpoint(adapter, body_json, body_uuid, et, modified_since=modified_since)
+        for et in BODY_ENTITY_TYPES
     ]
-    field_names = [f for f, url in url_fields if url]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    for field, res in zip(field_names, results, strict=False):
+    for et, res in zip(BODY_ENTITY_TYPES, results, strict=False):
         if isinstance(res, Exception):
-            errors.append(f"{short}.{field}: {res}")
+            errors.append(f"{short}.{et.value}: {res}")
         elif isinstance(res, int):
-            counts[field] = counts.get(field, 0) + res
+            counts[et.value] = counts.get(et.value, 0) + res
 
     # Embedded-Objects (OParl 1.0 Kompatibilität)
     try:
@@ -153,15 +171,11 @@ async def _run_enrichment(body_uuid: UUID, short: str) -> dict[str, int]:
         except Exception as exc:
             logger.warning("Photo enrichment failed for %s: %s", short, exc)
 
-    if settings.enrichment_auto_geocoding:
-        try:
-            from ingestor.flows.tasks.geocoding import geocode_locations
-
-            res = await geocode_locations(body_uuid)
-            out["geocode_tried"] = res.get("tried", 0)
-            out["geocode_success"] = res.get("success", 0)
-        except Exception as exc:
-            logger.warning("Geocoding failed for %s: %s", short, exc)
+    # Geocoding wird NICHT mehr im Sync-Flow gemacht — der dedizierte
+    # GeocodingWorker (siehe workers/geocoding.py) übernimmt das seriell
+    # und Rate-Limit-konform. Sync schreibt nur die Adress-Spalten in
+    # locations, der Worker pickt sie binnen Sekunden ab.
+    # Das alte enrichment_auto_geocoding-Setting wird ignoriert.
 
     return out
 
@@ -228,7 +242,14 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
             raise ValueError(f"Source {source_id} not found")
         modified_since = None if full else source.last_sync_at
         source_name = source.name
-        system_url = source.system_url
+        # Adapter-Type aus DB lesen (default: oparl). Sync-Flow kennt keine
+        # Vendor-Specials — der Adapter abstrahiert OParl-HTTP vs. RIS-HTML.
+        adapter_cls = get_adapter_class(source.adapter_type)
+        # Wir reichen die ganze Source-Instanz an den Adapter weiter, damit
+        # Scraper auch ``source.config`` lesen können. Detached-Object: wir
+        # reload-en sie im Adapter-Scope unten neu, damit kein Session-Leak
+        # entsteht.
+        source_obj = source
 
     async with get_session() as session:
         sync_log = SyncLog(
@@ -247,9 +268,19 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
 
     try:
         async with asyncio.timeout(settings.sync_source_timeout_seconds):
-            async with OParlClient() as client:
+            async with adapter_cls(source_obj) as adapter:
                 try:
-                    bodies = await fetch_source_bodies(client, system_url)
+                    bodies = await fetch_source_bodies(adapter)
+                except NotImplementedError as exc:
+                    errors.append(
+                        f"{source_name}.discover_bodies: adapter '{adapter.ADAPTER_TYPE}'"
+                        f" is a SKELETON ({exc})"
+                    )
+                    log.warning(
+                        "Adapter %s is skeleton — no bodies discovered",
+                        adapter.ADAPTER_TYPE,
+                    )
+                    bodies = []
                 except Exception as exc:
                     errors.append(f"{source_name}.fetch_bodies: {exc}")
                     log.exception("Failed to fetch bodies")
@@ -276,7 +307,7 @@ async def sync_source_flow(source_id: UUID, full: bool = False) -> dict:
                             return {}, []
                         try:
                             body_counts, body_errors = await _sync_single_body(
-                                client, bj, uuid_, modified_since
+                                adapter, bj, uuid_, modified_since
                             )
                             enrich = await _run_enrichment(uuid_, bj.get("shortName", "?"))
                             body_counts.update(enrich)

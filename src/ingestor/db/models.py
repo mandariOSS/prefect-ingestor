@@ -82,13 +82,25 @@ class OParlEntityMixin:
 
 
 class Source(Base, TimestampMixin):
-    """Eine verwaltete OParl-Quelle (Kommune)."""
+    """Eine verwaltete Datenquelle (Kommune).
+
+    Hinweis: ``adapter_type`` bestimmt, welcher BaseAdapter beim Sync
+    instanziiert wird. Default ``"oparl"`` (volle Backwards-Compat mit
+    bisherigen Sources). Verfügbare Werte siehe ``ingestor.adapters.registry``:
+    ``"oparl"``, ``"ris_sessionnet"``, ``"ris_allris"``, ``"ris_sdnet"``.
+    Vendor-spezifische Settings (Base-URL für Scraper, Encoding, …) gehören
+    in das ``config`` JSONB.
+    """
 
     __tablename__ = "sources"
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     system_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # Adapter-Selektor — siehe ingestor.adapters.registry.ADAPTERS
+    adapter_type: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="oparl", index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     sync_interval_min: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -460,7 +472,20 @@ class Location(Base, TimestampMixin, OParlEntityMixin):
     region: Mapped[str | None] = mapped_column(String(100))
     latitude: Mapped[float | None] = mapped_column()
     longitude: Mapped[float | None] = mapped_column()
+    # Mandari-Extension: Geocode-Retry-Counter für GeocodingWorker.
+    # Wird vom Worker bei jedem Geocoding-Versuch inkrementiert (Hit oder Miss).
+    # Ab MAX_GEOCODE_ATTEMPTS (in workers/geocoding.py) versucht der Worker
+    # diese Adresse nicht mehr — typischerweise un-geocodbare Strings wie
+    # "TBA", "wird noch bekanntgegeben", oder kaputte Datensätze.
+    geocode_attempts: Mapped[int | None] = mapped_column(default=0)
 
     __table_args__ = (
         Index("ix_location_body_modified", "body_id", "oparl_modified"),
+        # Worker-Claim-Query: WHERE latitude IS NULL AND street_address IS NOT NULL
+        # ORDER BY geocode_attempts ASC. Partial Index für maximale Geschwindigkeit.
+        Index(
+            "ix_location_geocode_pending",
+            "geocode_attempts",
+            postgresql_where="latitude IS NULL AND street_address IS NOT NULL",
+        ),
     )

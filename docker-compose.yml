@@ -8,8 +8,11 @@
 #   - scheduler        Sync-Loop (alle SYNC_INTERVAL_MINUTES), täglicher
 #                      Full-Sync, Source-Seed beim ersten Start
 #   - ocr-worker       PDF-Textextraktion (Hintergrund)
-# Hinweis: Nominatim (Geocoding) wurde entfernt — bei Bedarf public
-# Nominatim-Instanz verwenden (NOMINATIM_URL in .env).
+#   - geocoding-worker Dedizierter Nominatim-Consumer (1 Request alle
+#                      GEOCODING_INTERVAL_SECONDS, default 5 s) — strikt
+#                      seriell, hält die Public-Nominatim-Usage-Policy ein.
+#                      Nutzt per Default https://nominatim.openstreetmap.org;
+#                      eigene Instanz via NOMINATIM_URL überschreibbar.
 # =============================================================================
 
 name: mandari-ingestor
@@ -85,8 +88,8 @@ services:
       SYNC_BODY_CONCURRENCY: ${SYNC_BODY_CONCURRENCY:-4}
       SYNC_QUARANTINE_THRESHOLD: ${SYNC_QUARANTINE_THRESHOLD:-10}
       ENRICHMENT_AUTO_PHOTOS: ${ENRICHMENT_AUTO_PHOTOS:-true}
-      ENRICHMENT_AUTO_GEOCODING: ${ENRICHMENT_AUTO_GEOCODING:-false}
-      NOMINATIM_URL: ${NOMINATIM_URL:-}
+      # Geocoding läuft im dedizierten geocoding-worker, NICHT im scheduler.
+      # ENRICHMENT_AUTO_GEOCODING wird vom Sync-Flow ignoriert (legacy).
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,6 +126,44 @@ services:
     healthcheck:
       disable: true
     mem_limit: 1g
+    networks:
+      - ingestor
+
+  # ===========================================================================
+  # Geocoding-Worker — Dedicated Nominatim consumer (rate-limited).
+  # Macht 1 Request alle GEOCODING_INTERVAL_SECONDS (default 5 s) — strikt
+  # seriell, ein einziger asyncio-Loop mit shared httpx.AsyncClient. Pickt
+  # Locations ohne lat/lon aus der DB und schreibt Koordinaten zurück.
+  # Hält die Public-Nominatim-Usage-Policy (≤ 1 Req/s) sicher ein.
+  # ===========================================================================
+  geocoding-worker:
+    image: mandari-ingestor:dev
+    container_name: ingestor-geocoding-worker
+    restart: unless-stopped
+    command: ["ingestor-geocoding"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ingestor}:${POSTGRES_PASSWORD:-ingestor_dev}@postgres:5432/${POSTGRES_DB:-ingestor}
+      PREFECT_API_URL: ""
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      GEOCODING_ENABLED: ${GEOCODING_ENABLED:-true}
+      # Default 5 s gibt Public-Nominatim 5x mehr Luft als gefordert (1/s).
+      # Eigene Instanz: deutlich kleiner setzen (z.B. 0.1).
+      GEOCODING_INTERVAL_SECONDS: ${GEOCODING_INTERVAL_SECONDS:-5}
+      GEOCODING_BATCH_SIZE: ${GEOCODING_BATCH_SIZE:-50}
+      GEOCODING_IDLE_SLEEP_SECONDS: ${GEOCODING_IDLE_SLEEP_SECONDS:-60}
+      NOMINATIM_URL: ${NOMINATIM_URL:-https://nominatim.openstreetmap.org}
+      # Pflichtfeld nach Nominatim Usage Policy — identifiziert die App
+      # und liefert Kontakt im Missbrauchsfall. Niemals leer lassen.
+      NOMINATIM_USER_AGENT: ${NOMINATIM_USER_AGENT:-Mandari-Ingestor/0.1 (kontakt@mandari.de)}
+      NOMINATIM_EMAIL: ${NOMINATIM_EMAIL:-kontakt@mandari.de}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    mem_limit: 256m
     networks:
       - ingestor
 

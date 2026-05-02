@@ -42,6 +42,13 @@ dependencies = [
     # Utils
     "python-dateutil>=2.9",
     "tenacity>=9.0",            # zusätzliche Retry-Patterns
+    # HTML-Parsing für Nicht-OParl-RIS-Adapter (SessionNet, ALLRIS, SD.NET …)
+    # selectolax ist deutlich schneller als BeautifulSoup für die typischen
+    # RIS-HTML-Tabellen — wir nehmen beide weil bs4 angenehmere Defaults für
+    # ad-hoc-Parsing hat, selectolax für die Hot-Path-Listen-Views.
+    "beautifulsoup4>=4.12",
+    "selectolax>=0.3",
+    "lxml>=5.0",                # Robuster HTML-Parser, von bs4 als Backend genutzt
 ]
 
 [project.optional-dependencies]
@@ -61,6 +68,7 @@ dev = [
 ingestor-api = "ingestor.workers.api_entrypoint:main"
 ingestor-scheduler = "ingestor.workers.scheduler:main"
 ingestor-ocr = "ingestor.workers.ocr:main"
+ingestor-geocoding = "ingestor.workers.geocoding:main"
 ingestor-flow = "ingestor.flows.cli:app"
 ingestor-seed = "ingestor.workers.seed:seed_sources_if_empty"
 

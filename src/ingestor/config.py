@@ -71,7 +71,10 @@ class Settings(BaseSettings):
     sync_source_timeout_seconds: int = 1800  # 30 Min
     # Enrichment nach Body-Sync automatisch triggern
     enrichment_auto_photos: bool = True
-    enrichment_auto_geocoding: bool = False  # nur wenn NOMINATIM_URL konfiguriert
+    # DEPRECATED seit v0.2: ignoriert. Geocoding läuft im dedizierten
+    # GeocodingWorker (workers/geocoding.py), unabhängig vom Sync-Flow.
+    # Setting bleibt nur für Backwards-Compat mit alten .env-Files erhalten.
+    enrichment_auto_geocoding: bool = False
 
     # === OCR-Worker ===
     ocr_enabled: bool = True
@@ -93,7 +96,31 @@ class Settings(BaseSettings):
     #   Ollama:   base_url=http://localhost:11434/v1    model=llama3.2-vision
 
     # === Geocoding (Nominatim) ===
-    nominatim_url: str = "http://localhost:8088"  # Lokale Docker-Instanz
+    # Default: öffentliche OSM-Nominatim-Instanz. Eigenbetrieb möglich, aber für
+    # die typische Mandari-Last reichen die Public-Limits (1 req/s) bei weitem,
+    # solange der GeocodingWorker (siehe workers/geocoding.py) die Anfragen
+    # serialisiert und mit GEOCODING_INTERVAL_SECONDS pausiert.
+    nominatim_url: str = "https://nominatim.openstreetmap.org"
+    # Pflichtfeld nach Nominatim-Usage-Policy: identifiziert die Anwendung +
+    # liefert Kontakt im Missbrauchsfall. Niemals leer lassen.
+    nominatim_user_agent: str = "Mandari-Ingestor/0.1 (kontakt@mandari.de)"
+    # Email als zusätzlicher Identifier (Nominatim akzeptiert sowohl Header
+    # als auch ?email=-Parameter; setzen wir beides, um robust zu sein).
+    nominatim_email: str = "kontakt@mandari.de"
+
+    # === Geocoding-Worker (dedicated, rate-limited) ===
+    # Eigener Container, der seriell Locations ohne Koordinaten geocodet.
+    # Auf False setzen, wenn Geocoding manuell oder über externes Tool laufen soll.
+    geocoding_enabled: bool = True
+    # Sekunden zwischen zwei Geocoding-Anfragen. Default 5 s ist konservativ
+    # — Public-Nominatim erlaubt 1/s, aber 5 s lässt deutlich Luft für andere
+    # Mandari-Komponenten und sehr großzügige Burst-Tolerance.
+    geocoding_interval_seconds: float = 5.0
+    # Max. Locations pro Worker-Iteration (kleiner Batch hält Memory niedrig
+    # und gibt schnelle Reaktion auf neue Daten zwischen den Sleeps).
+    geocoding_batch_size: int = 50
+    # Pause wenn keine Arbeit ansteht (Worker bleibt aktiv, prüft regelmäßig)
+    geocoding_idle_sleep_seconds: int = 60
 
     # === Logging ===
     log_level: str = "INFO"
